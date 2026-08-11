@@ -2,12 +2,10 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from datetime import datetime, timezone
 import os
 import time
 import re
 
-import pandas as pd
 import requests
 import feedparser
 import psycopg
@@ -149,12 +147,12 @@ def health():
 
 def clean_num(v):
     try:
-        if pd.isna(v):
+        if v is None:
             return None
 
         return float(v)
 
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
@@ -275,35 +273,11 @@ def candles(
 
             try:
 
-                o = (
-                    opens[i]
-                    if i < len(opens)
-                    else None
-                )
-
-                h = (
-                    highs[i]
-                    if i < len(highs)
-                    else None
-                )
-
-                l = (
-                    lows[i]
-                    if i < len(lows)
-                    else None
-                )
-
-                c = (
-                    closes[i]
-                    if i < len(closes)
-                    else None
-                )
-
-                v = (
-                    volumes[i]
-                    if i < len(volumes)
-                    else 0
-                )
+                o = opens[i] if i < len(opens) else None
+                h = highs[i] if i < len(highs) else None
+                l = lows[i] if i < len(lows) else None
+                c = closes[i] if i < len(closes) else None
+                v = volumes[i] if i < len(volumes) else 0
 
                 if None in (o, h, l, c):
                     continue
@@ -336,8 +310,7 @@ def candles(
             "range": range,
             "currency": meta.get("currency"),
             "exchange": meta.get("exchangeName"),
-            "regular_market_price":
-                meta.get("regularMarketPrice"),
+            "regular_market_price": meta.get("regularMarketPrice"),
             "candles": candles_out,
         }
 
@@ -350,9 +323,7 @@ def candles(
             "interval": interval,
             "range": range,
             "candles": [],
-            "error": (
-                f"{type(exc).__name__}: {exc}"
-            ),
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -368,17 +339,13 @@ WEATHER_POINTS = {
 }
 
 
-# Successful weather response lives here.
-#
-# Render may restart the service occasionally, so this is not
-# permanent storage — but that is perfectly fine for weather.
 WEATHER_CACHE = {
     "timestamp": 0,
     "data": None,
 }
 
 
-# Only ask Open-Meteo for fresh data every 30 minutes.
+# Refresh weather only every 30 minutes.
 WEATHER_CACHE_SECONDS = 30 * 60
 
 
@@ -402,22 +369,18 @@ def weather():
     now = time.time()
 
     # --------------------------------------------------------
-    # RETURN CACHE IF IT IS STILL FRESH
+    # RETURN FRESH CACHE
     # --------------------------------------------------------
 
     if (
         WEATHER_CACHE["data"] is not None
         and
-        now - WEATHER_CACHE["timestamp"]
-        < WEATHER_CACHE_SECONDS
+        now - WEATHER_CACHE["timestamp"] < WEATHER_CACHE_SECONDS
     ):
 
-        cached = dict(
-            WEATHER_CACHE["data"]
-        )
+        cached = dict(WEATHER_CACHE["data"])
 
         cached["cached"] = True
-
         cached["cache_age_seconds"] = int(
             now - WEATHER_CACHE["timestamp"]
         )
@@ -426,18 +389,13 @@ def weather():
 
 
     # --------------------------------------------------------
-    # TRY A FRESH OPEN-METEO REQUEST
+    # FETCH WEATHER FROM OPEN-METEO
     # --------------------------------------------------------
 
     try:
 
-        keys = list(
-            WEATHER_POINTS.keys()
-        )
-
-        coordinates = list(
-            WEATHER_POINTS.values()
-        )
+        keys = list(WEATHER_POINTS.keys())
+        coordinates = list(WEATHER_POINTS.values())
 
         latitudes = ",".join(
             str(lat)
@@ -449,28 +407,22 @@ def weather():
             for lat, lon in coordinates
         )
 
-        url = (
-            "https://api.open-meteo.com/"
-            "v1/forecast"
-        )
+        url = "https://api.open-meteo.com/v1/forecast"
 
         params = {
             "latitude": latitudes,
             "longitude": longitudes,
-            "daily":
-                "precipitation_sum,"
-                "temperature_2m_max",
+            "daily": "precipitation_sum,temperature_2m_max",
             "timezone": "auto",
             "forecast_days": 7,
         }
 
         headers = {
-            "User-Agent":
+            "User-Agent": (
                 "Mozilla/5.0 "
-                "(compatible; CocoaAI/1.1)",
-            "Accept":
-                "application/json,"
-                "text/plain,*/*",
+                "(compatible; CocoaAI/1.1)"
+            ),
+            "Accept": "application/json,text/plain,*/*",
         }
 
         response = requests.get(
@@ -484,7 +436,6 @@ def weather():
 
         payload = response.json()
 
-        # Multiple coordinates normally return a list.
         if isinstance(payload, list):
             results = payload
         else:
@@ -499,22 +450,15 @@ def weather():
 
             result = results[index]
 
-            daily = (
-                result.get("daily")
-                or {}
-            )
+            daily = result.get("daily") or {}
 
             rain_values = (
-                daily.get(
-                    "precipitation_sum"
-                )
+                daily.get("precipitation_sum")
                 or []
             )
 
             temp_values = (
-                daily.get(
-                    "temperature_2m_max"
-                )
+                daily.get("temperature_2m_max")
                 or []
             )
 
@@ -540,24 +484,16 @@ def weather():
             )
 
             locations[key] = {
-                "rain_7d_mm":
-                    round(rain, 2),
-
-                "max_temp_c":
-                    round(tmax, 1),
-
-                "risk_label":
-                    label,
-
-                "risk_color":
-                    color,
+                "rain_7d_mm": round(rain, 2),
+                "max_temp_c": round(tmax, 1),
+                "risk_label": label,
+                "risk_color": color,
             }
 
 
         if not locations:
             raise RuntimeError(
-                "Open-Meteo returned "
-                "no usable weather locations"
+                "Open-Meteo returned no usable weather locations"
             )
 
 
@@ -570,7 +506,6 @@ def weather():
         }
 
 
-        # Save the successful result.
         WEATHER_CACHE["timestamp"] = now
         WEATHER_CACHE["data"] = data
 
@@ -579,12 +514,8 @@ def weather():
 
     except Exception as exc:
 
-        # ----------------------------------------------------
-        # OPEN-METEO FAILED
-        #
-        # If we have ANY previous successful result,
-        # return that instead of killing the weather cards.
-        # ----------------------------------------------------
+        # If Open-Meteo temporarily fails but we have
+        # previously fetched data, keep serving that data.
 
         if WEATHER_CACHE["data"] is not None:
 
@@ -594,31 +525,24 @@ def weather():
 
             cached["cached"] = True
             cached["stale"] = True
-
             cached["cache_age_seconds"] = int(
-                now
-                - WEATHER_CACHE["timestamp"]
+                now - WEATHER_CACHE["timestamp"]
             )
 
             cached["warning"] = (
                 "Fresh weather request failed: "
-                f"{type(exc).__name__}: "
-                f"{exc}"
+                f"{type(exc).__name__}: {exc}"
             )
 
             return cached
 
 
-        # There has not yet been one successful weather fetch.
         return {
             "source": "Open-Meteo",
             "cached": False,
             "stale": False,
             "locations": {},
-            "error": (
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            ),
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -639,12 +563,10 @@ def news():
 
     now = time.time()
 
-    # News does not need re-downloading on every refresh either.
     if (
         NEWS_CACHE["data"] is not None
         and
-        now - NEWS_CACHE["timestamp"]
-        < NEWS_CACHE_SECONDS
+        now - NEWS_CACHE["timestamp"] < NEWS_CACHE_SECONDS
     ):
 
         cached = dict(
@@ -674,9 +596,10 @@ def news():
     }
 
     headers = {
-        "User-Agent":
+        "User-Agent": (
             "Mozilla/5.0 "
-            "(compatible; CocoaAI/1.1)",
+            "(compatible; CocoaAI/1.1)"
+        ),
     }
 
     try:
@@ -702,17 +625,14 @@ def news():
 
             if (
                 hasattr(entry, "source")
-                and
-                isinstance(
+                and isinstance(
                     entry.source,
                     dict,
                 )
             ):
-                source = (
-                    entry.source.get(
-                        "title",
-                        "",
-                    )
+                source = entry.source.get(
+                    "title",
+                    "",
                 )
 
             title = re.sub(
@@ -727,40 +647,26 @@ def news():
 
             items.append(
                 {
-                    "title":
-                        title,
-
-                    "published_at":
-                        getattr(
-                            entry,
-                            "published",
-                            "Recent",
-                        ),
-
-                    "source":
-                        source
-                        or
-                        "Google News",
-
-                    "link":
-                        getattr(
-                            entry,
-                            "link",
-                            "",
-                        ),
+                    "title": title,
+                    "published_at": getattr(
+                        entry,
+                        "published",
+                        "Recent",
+                    ),
+                    "source": source or "Google News",
+                    "link": getattr(
+                        entry,
+                        "link",
+                        "",
+                    ),
                 }
             )
 
 
         data = {
-            "source":
-                "Google News RSS",
-
-            "cached":
-                False,
-
-            "items":
-                items,
+            "source": "Google News RSS",
+            "cached": False,
+            "items": items,
         }
 
 
@@ -785,14 +691,9 @@ def news():
 
 
         return {
-            "source":
-                "Google News RSS",
-
-            "items":
-                [],
-
-            "error":
-                f"{type(exc).__name__}: {exc}",
+            "source": "Google News RSS",
+            "items": [],
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -807,9 +708,7 @@ def save_prediction(payload: dict):
 
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Database is not configured"
-            ),
+            detail="Database is not configured",
         )
 
 
@@ -939,9 +838,8 @@ def save_prediction(payload: dict):
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Database save failed: "
-                f"{type(exc).__name__}: "
-                f"{exc}"
+                "Database save failed: "
+                f"{type(exc).__name__}: {exc}"
             ),
         )
 
@@ -962,11 +860,8 @@ def get_predictions(
     if not DATABASE_URL:
 
         return {
-            "database":
-                False,
-
-            "items":
-                [],
+            "database": False,
+            "items": [],
         }
 
 
@@ -1002,25 +897,17 @@ def get_predictions(
 
 
         return {
-            "database":
-                True,
-
-            "items":
-                rows,
+            "database": True,
+            "items": rows,
         }
 
 
     except Exception as exc:
 
         return {
-            "database":
-                True,
-
-            "items":
-                [],
-
-            "error":
-                f"{type(exc).__name__}: {exc}",
+            "database": True,
+            "items": [],
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -1057,34 +944,28 @@ def performance():
                         COUNT(*)
                         FILTER
                         (
-                            WHERE
-                            graded_24h_at
-                            IS NOT NULL
+                            WHERE graded_24h_at IS NOT NULL
                         )
                         AS graded_24h,
 
                         COUNT(*)
                         FILTER
                         (
-                            WHERE
-                            result_24h = 'WIN'
+                            WHERE result_24h = 'WIN'
                         )
                         AS wins_24h,
 
                         COUNT(*)
                         FILTER
                         (
-                            WHERE
-                            result_24h = 'LOSS'
+                            WHERE result_24h = 'LOSS'
                         )
                         AS losses_24h,
 
                         AVG(return_24h)
                         FILTER
                         (
-                            WHERE
-                            graded_24h_at
-                            IS NOT NULL
+                            WHERE graded_24h_at IS NOT NULL
                         )
                         AS avg_return
 
@@ -1142,33 +1023,18 @@ def performance():
             float(
                 row["avg_return"]
             )
-            if
-            row.get(
-                "avg_return"
-            )
-            is not None
+            if row.get("avg_return") is not None
             else None
         )
 
 
         return {
-            "total_predictions":
-                total,
-
-            "graded_24h":
-                graded,
-
-            "wins_24h":
-                wins,
-
-            "losses_24h":
-                losses,
-
-            "win_rate":
-                win_rate,
-
-            "avg_return":
-                avg_return,
+            "total_predictions": total,
+            "graded_24h": graded,
+            "wins_24h": wins,
+            "losses_24h": losses,
+            "win_rate": win_rate,
+            "avg_return": avg_return,
         }
 
 
@@ -1181,6 +1047,5 @@ def performance():
             "losses_24h": 0,
             "win_rate": None,
             "avg_return": None,
-            "error":
-                f"{type(exc).__name__}: {exc}",
+            "error": f"{type(exc).__name__}: {exc}",
         }
