@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>COCOA AI V1 — Trading Analysis</title>
+<style>
+  :root{
+    --bg:#070b0d; --panel:#0d1317; --panel2:#10171c; --border:#223039;
+    --text:#f3f6f7; --muted:#93a1aa; --green:#27d45c; --red:#ff4f45;
+    --amber:#ffbd2e; --blue:#49a7ff; --cyan:#56d5e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#070b0d,#0a0f12 60%,#070b0d);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  button,input{font:inherit}
+  .app{min-height:100vh;display:grid;grid-template-columns:210px 1fr}
+  aside{position:sticky;top:0;height:100vh;border-right:1px solid var(--border);background:#080d10;padding:18px 12px}
+  .brand{display:flex;gap:12px;align-items:center;padding:8px 10px 20px}
+  .bean{width:34px;height:46px;border-radius:60% 40% 60% 40%;background:linear-gradient(135deg,#c45b22,#6f2c0b);transform:rotate(18deg);box-shadow:inset 0 0 0 2px #8d3b14}
+  .brand h1{font-size:20px;line-height:1;margin:0}.brand small{color:#c2c8cb;letter-spacing:.09em}
+  nav a{display:flex;gap:12px;align-items:center;color:#b7c1c6;text-decoration:none;padding:12px 14px;border-radius:8px;margin:3px 0}
+  nav a.active{color:var(--green);background:#10181c;border-left:3px solid var(--green)}
+  .status{position:absolute;left:12px;right:12px;bottom:18px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:8px}
+  main{padding:8px 12px 24px}
+  .topbar{display:grid;grid-template-columns:1.3fr .6fr .6fr .7fr .9fr;gap:10px;border:1px solid var(--border);border-radius:12px;padding:12px 16px;background:#0a1014;margin-bottom:10px}
+  .metric small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}.metric b{font-size:20px}.metric .green{color:var(--green)}
+  .grid{display:grid;grid-template-columns:270px minmax(0,1.7fr) 330px;gap:10px}
+  .card{background:linear-gradient(180deg,#0f1519,#0b1114);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .card h3{font-size:13px;letter-spacing:.03em;margin:0;padding:12px 14px;border-bottom:1px solid #1b272e}
+  .signal{padding:18px}.signal .mode{font-size:34px;font-weight:800;color:var(--amber);margin-bottom:10px}
+  .signal .bias{font-size:16px;margin-bottom:14px}.signal .bias b{color:var(--red)}
+  .confidence{font-size:42px;font-weight:800}.bar{height:7px;background:#1e2930;border-radius:20px;overflow:hidden;margin:6px 0 16px}.bar>span{display:block;height:100%;width:63%;background:linear-gradient(90deg,#d99a00,#ffc328)}
+  .kv{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:13px;margin:10px 0}.kv span:first-child{color:#c8d0d4}.high{color:var(--red)} .fair{color:var(--amber)}
+  .btn{width:100%;padding:12px;border:1px solid #3c4a53;background:#10181d;color:#fff;border-radius:7px}
+  .chartwrap{height:460px;position:relative}
+  .chartwrap iframe{width:100%;height:100%;border:0;background:#0b1014}
+  .news{padding:6px 14px 12px}.newsitem{padding:10px 0;border-bottom:1px solid #1c272d}.newsitem:last-child{border:0}.newsitem .time{color:#7f8c93;font-size:11px}.newsitem b{display:block;font-size:13px;margin:3px 0}.tag{font-size:10px;font-weight:700}.bull{color:var(--green)}.bear{color:var(--red)}
+  .weather{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px}.weatherbox{padding:12px;border:1px solid #1f2b32;border-radius:8px;background:#0d1418}.weatherbox h4{margin:0 0 6px;font-size:12px}.temp{font-size:28px;font-weight:800}.rain{font-size:13px;color:#bfc8cc}
+  .scores{grid-column:1/4;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;padding:10px}
+  .score{border:1px solid #23313a;background:#0d1418;border-radius:8px;padding:12px;min-height:104px}.score small{color:#b5c0c5}.score strong{display:block;font-size:24px;margin-top:12px}
+  .lower{grid-column:1/4;display:grid;grid-template-columns:1.1fr 1.4fr 1.6fr;gap:10px}
+  table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:9px 10px;border-bottom:1px solid #1b272e;text-align:left}th{color:#93a2aa;font-weight:600}
+  .history{padding:12px}.donut{width:110px;height:110px;border-radius:50%;background:conic-gradient(var(--green) 0 66%,var(--red) 66% 100%);display:grid;place-items:center;margin:12px auto}.donut:after{content:"66%";display:grid;place-items:center;width:72px;height:72px;border-radius:50%;background:#0d1418;font-weight:800;font-size:20px}
+  .perf{padding:12px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.perf .p{background:#0d1418;border:1px solid #1f2b32;border-radius:8px;padding:10px}.p small{color:#8f9ca4}.p b{display:block;margin-top:4px;font-size:21px}
+  .mobile-tabs{display:none}
+  .price-edit{display:flex;gap:6px;align-items:center;margin-top:5px}.price-edit input{width:95px;background:#0d1418;color:white;border:1px solid #2a3942;border-radius:6px;padding:6px 8px}
+  .note{font-size:10px;color:#72828b;margin:6px 0 0}
+  @media(max-width:1050px){
+    .app{grid-template-columns:1fr} aside{display:none} main{padding:8px 8px 76px}
+    .topbar{grid-template-columns:1.5fr 1fr 1fr}.topbar .hide-sm{display:none}
+    .grid{grid-template-columns:1fr}.scores,.lower{grid-column:1}.scores{grid-template-columns:repeat(2,1fr)}.lower{grid-template-columns:1fr}
+    .chartwrap{height:420px}
+    .mobile-tabs{display:grid;position:fixed;bottom:0;left:0;right:0;grid-template-columns:repeat(5,1fr);z-index:20;background:#0a1014;border-top:1px solid var(--border);padding-bottom:env(safe-area-inset-bottom)}
+    .mobile-tabs a{padding:12px 4px;text-align:center;color:#9ca9af;text-decoration:none;font-size:11px}.mobile-tabs a.active{color:var(--green)}
+  }
+  @media(max-width:620px){
+    .topbar{grid-template-columns:1fr 1fr}.topbar .metric:nth-child(n+3){display:none}
+    .scores{grid-template-columns:repeat(2,1fr)}.weather{grid-template-columns:1fr 1fr}
+    .chartwrap{height:360px}.signal .mode{font-size:30px}.confidence{font-size:38px}
+  }
+
+  .section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid #1b272e}
+  .section-title h3{padding:0;border:0}.pill{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid #2c3942;border-radius:999px;font-size:10px;color:#b8c3c8;background:#0b1216}
+  .pill.good{color:var(--green);border-color:#235a37}.pill.warn{color:var(--amber);border-color:#5f4b19}.pill.bad{color:var(--red);border-color:#642d29}
+  .tf-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px}.tf{padding:10px;border:1px solid #223039;border-radius:8px;background:#0d1418}.tf .name{font-size:11px;color:#91a0a8}.tf .dir{font-size:17px;font-weight:800;margin:5px 0}.tf .meta{font-size:10px;color:#84929a}
+  .levels{padding:10px 14px}.level-row{display:grid;grid-template-columns:90px 1fr 82px;gap:8px;align-items:center;margin:8px 0}.level-bar{height:7px;background:#19242a;border-radius:20px;overflow:hidden}.level-bar span{display:block;height:100%;background:#4a5961}.level-val{text-align:right;font-weight:700}
+  .entry-box{padding:14px}.entry-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.entry-call{font-size:26px;font-weight:900}.entry-call.wait{color:var(--amber)}.entry-call.go{color:var(--green)}.entry-call.stop{color:var(--red)}
+  .mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.mini{padding:9px;border:1px solid #223039;border-radius:7px;background:#0d1418}.mini small{color:#83929a;display:block}.mini b{font-size:14px}
+  .reaction{padding:10px 14px}.reaction-row{display:grid;grid-template-columns:68px 1fr 62px;gap:8px;padding:8px 0;border-bottom:1px solid #1a252b}.reaction-row:last-child{border:0}.reaction-title{font-size:12px}.reaction-move{text-align:right;font-weight:800}
+  .priced{padding:12px 14px}.meter{height:10px;background:#1a252b;border-radius:20px;overflow:hidden}.meter span{display:block;height:100%;width:72%;background:linear-gradient(90deg,#2bd65d,#ffbf32,#ff554b)}
+  .cities{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px}.city{padding:10px;border:1px solid #223039;border-radius:8px;background:#0d1418}.city .cname{font-size:11px;color:#aeb8bd}.city .risk{font-size:16px;font-weight:800;margin:5px 0}.city .tiny{font-size:10px;color:#819099}
+  .calendar{padding:10px 14px}.event{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:9px 0;border-bottom:1px solid #1a252b}.event:last-child{border:0}.event .date{font-size:11px;color:#96a4ab}.event b{font-size:12px}
+  .regime{padding:12px 14px;display:grid;grid-template-columns:1fr auto;align-items:center}.regime strong{font-size:25px;color:var(--amber)}.regime small{color:#83929a}
+  .changed{padding:10px 14px}.change{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #1a252b}.change:last-child{border:0}.chg-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;background:#73848d}.chg-dot.up{background:var(--green)}.chg-dot.down{background:var(--red)}.chg-dot.warn{background:var(--amber)}
+  .analyst{padding:14px;line-height:1.5;color:#d7dee2}.analyst b{color:white}.analyst .headline{font-size:18px;font-weight:800;margin-bottom:8px}
+  .alertbox{padding:12px 14px}.alert-item{padding:9px;border:1px solid #25323a;border-radius:8px;background:#0d1418;margin-bottom:8px;font-size:12px}
+  .fullspan{grid-column:1/4}.two-col{display:grid;grid-template-columns:1.5fr 1fr;gap:10px}.three-col{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .journal-wrap{overflow:auto}.journal-wrap table{min-width:760px}
+  .acc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px}.acc{border:1px solid #223039;border-radius:8px;background:#0d1418;padding:10px}.acc small{color:#84929a}.acc b{display:block;font-size:20px;margin-top:4px}
+  .spark{height:54px;display:flex;align-items:flex-end;gap:2px;margin-top:8px}.spark i{display:block;width:4px;background:#35505d;border-radius:2px 2px 0 0}
+  .footer-note{grid-column:1/4;color:#6f7f88;font-size:10px;text-align:center;padding:8px 12px 0}
+  @media(max-width:1050px){.fullspan{grid-column:1}.two-col,.three-col{grid-template-columns:1fr}.cities{grid-template-columns:repeat(2,1fr)}.tf-grid{grid-template-columns:repeat(3,1fr)}.acc-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:620px){.tf-grid{grid-template-columns:repeat(2,1fr)}.cities{grid-template-columns:1fr 1fr}.mini-grid{grid-template-columns:1fr 1fr}.acc-grid{grid-template-columns:1fr 1fr}}
+
+
+/* --- iPhone/mobile layout hotfix --- */
+@media (max-width:1050px){
+  html,body{width:100%;max-width:100%;overflow-x:hidden}
+  .app{display:block!important;width:100%!important;max-width:100%!important}
+  main{width:100%!important;max-width:100%!important;overflow:hidden;padding:8px 8px 78px!important}
+  .grid{display:block!important;width:100%!important;max-width:100%!important}
+  .grid > *,
+  .fullspan,
+  .lower,
+  .two-col,
+  .three-col{
+    display:block!important;
+    width:100%!important;
+    max-width:100%!important;
+    min-width:0!important;
+    grid-column:auto!important;
+    margin-left:0!important;
+    margin-right:0!important;
+  }
+  .grid > *{margin-bottom:10px!important}
+  .lower > *,
+  .two-col > *,
+  .three-col > *{margin-bottom:10px!important}
+  .card{width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden}
+  .chartwrap{width:100%!important;max-width:100%!important;min-width:0!important;height:390px!important}
+  .chartwrap iframe{display:block;width:100%!important;max-width:100%!important;min-width:0!important}
+  .scores{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .tf-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .cities{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .weather{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .mini-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .acc-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .topbar{width:100%!important;max-width:100%!important;overflow:hidden}
+  table{max-width:100%}
+  .journal-wrap{width:100%;max-width:100%;overflow-x:auto}
+}
+@media (max-width:520px){
+  .scores,.tf-grid,.cities,.weather,.mini-grid,.acc-grid{
+    grid-template-columns:1fr!important;
+  }
+  .chartwrap{height:350px!important}
+  .entry-head{display:block!important}
+  .entry-head>div:last-child{text-align:left!important;margin-top:10px}
+  .level-row{grid-template-columns:78px minmax(0,1fr) 70px!important;font-size:11px}
+  .topbar{grid-template-columns:1fr 1fr!important}
+  .metric b{font-size:18px}
+}
+
+
+/* V0.2.2 compact-phone polish */
+@media (max-width:520px){
+  .scores,.tf-grid,.cities,.weather,.mini-grid,.acc-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    gap:7px!important;
+  }
+  .score,.tf,.city,.weatherbox,.mini,.acc{padding:9px!important;min-width:0!important}
+  .score strong{font-size:20px!important}
+  .temp{font-size:24px!important}
+  .section-title{padding:10px 11px!important}
+  .section-title h3,.card h3{font-size:12px!important}
+  .news{padding-left:11px!important;padding-right:11px!important}
+  .entry-box,.analyst,.priced,.alertbox{padding:11px!important}
+}
+@media (max-width:360px){
+  .scores,.tf-grid,.cities,.weather,.mini-grid,.acc-grid{
+    grid-template-columns:1fr!important;
+  }
+}
+
+
+  .chart-toolbar{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid #1b272e;background:#0a1014;overflow-x:auto}
+  .tf-buttons,.chart-actions{display:flex;gap:6px}
+  .tf-buttons button,.chart-actions button{border:1px solid #27343c;background:#0e1519;color:#9ba8ae;border-radius:6px;padding:7px 10px;font-size:11px;white-space:nowrap}
+  .tf-buttons button.active,.chart-actions button.active{background:#1c2730;color:#fff;border-color:#40515c}
+  .ownchart-wrap{position:relative;height:430px;background:linear-gradient(180deg,#0a1014,#0b1115);overflow:hidden}
+  #cocoaChart{display:block;width:100%;height:100%;touch-action:none}
+  .chart-legend{position:absolute;top:10px;left:12px;display:flex;gap:10px;font-size:10px;color:#9cabb2;pointer-events:none}
+  .chart-watermark{position:absolute;right:18px;bottom:18px;font-size:30px;font-weight:900;letter-spacing:.12em;color:rgba(255,255,255,.035);pointer-events:none}
+  .chart-status{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;border-top:1px solid #1b272e;color:#839199;font-size:10px}
+  .chart-status #chartLastPrice{color:var(--green);font-weight:800}
+  @media(max-width:1050px){.ownchart-wrap{height:380px}}
+  @media(max-width:520px){.ownchart-wrap{height:340px}.chart-toolbar{padding:7px}.tf-buttons button,.chart-actions button{padding:6px 8px}.chart-legend{gap:7px;font-size:9px}}
+
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><div class="bean"></div><div><h1>COCOA AI</h1><small>TRADING ANALYSIS</small></div></div>
+    <nav>
+      <a class="active" href="#">◉ Dashboard</a><a href="#">⌁ Charts</a><a href="#">✦ AI Signal</a><a href="#">▤ News</a>
+      <a href="#">◫ Fundamentals</a><a href="#">☂ Weather</a><a href="#">◷ History</a><a href="#">▥ Statistics</a><a href="#">♢ Alerts</a><a href="#">⚙ Settings</a>
+    </nav>
+    <div class="status"><div><span class="dot"></span><b>OPERATIONAL</b></div><div class="note">Prototype V0 • browser dashboard</div></div>
+  </aside>
+
+  <main>
+    <section class="topbar">
+      <div class="metric"><small>Cocoa Futures (ICE)</small><b id="topPrice">5,637</b> <span class="green">+1.57%</span>
+        <div class="price-edit"><input id="priceInput" value="5637" inputmode="decimal"><button class="btn" style="padding:6px 10px;width:auto" onclick="setPrice()">Set</button></div>
+      </div>
+      <div class="metric"><small>24H High</small><b>5,682</b></div>
+      <div class="metric"><small>24H Low</small><b>5,512</b></div>
+      <div class="metric hide-sm"><small>Volume</small><b>18,432</b></div>
+      <div class="metric hide-sm"><small>Last Update</small><b id="lastUpdate">--:--</b><div class="green" id="backendStatus">● CHECKING BACKEND</div></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h3>AI TRADE SIGNAL</h3>
+        <div class="signal">
+          <div class="mode">◉ NO TRADE</div>
+          <div class="bias">Directional bias: <b>SHORT</b></div>
+          <div class="confidence">63%</div>
+          <div style="color:var(--amber);font-size:11px;font-weight:800">CONFIDENCE</div>
+          <div class="bar"><span></span></div>
+          <div class="kv"><span>Time Horizon</span><b>4–24 Hours</b></div>
+          <div class="kv"><span>Entry Quality</span><b class="fair">FAIR</b></div>
+          <div class="kv"><span>Risk Level</span><b class="high">HIGH</b></div>
+          <button class="btn" onclick="savePrediction()">SAVE THIS PREDICTION</button>
+          <div class="note" id="signalNote">V1: live weather + live browser-side market checks are being added. AI scoring is still demo until backend/API is connected.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">
+          <h3>COCOA FUTURES — COCOA AI CHART</h3>
+          <span class="pill good" id="chartSourcePill">OWN CHART</span>
+        </div>
+        <div class="chart-toolbar">
+          <div class="tf-buttons" id="chartTfButtons">
+            <button data-tf="5m">5m</button>
+            <button data-tf="15m">15m</button>
+            <button data-tf="1h">1h</button>
+            <button data-tf="4h" class="active">4h</button>
+            <button data-tf="1D">1D</button>
+          </div>
+          <div class="chart-actions">
+            <button id="toggleMA">MA</button>
+            <button id="toggleLevels" class="active">Levels</button>
+          </div>
+        </div>
+        <div class="ownchart-wrap">
+          <canvas id="cocoaChart"></canvas>
+          <div class="chart-legend">
+            <span id="legendO">O —</span>
+            <span id="legendH">H —</span>
+            <span id="legendL">L —</span>
+            <span id="legendC">C —</span>
+          </div>
+          <div class="chart-watermark">COCOA AI</div>
+        </div>
+        <div class="chart-status">
+          <span id="chartStatusText">Connecting to Cocoa AI backend…</span>
+          <span id="chartLastPrice">5,637</span>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h3>IMPORTANT NEWS</h3>
+          <div class="news" id="newsFeed">
+            <div class="newsitem"><span class="time">Loading</span><b>Checking cocoa-related public headlines…</b><span class="tag bull">LIVE CHECK</span></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:10px">
+          <h3>WEATHER OVERVIEW — LIVE</h3>
+          <div class="weather">
+            <div class="weatherbox"><h4>IVORY COAST<br><span style="color:#83929a">Abidjan region</span></h4><div class="temp" id="ciTemp">--°C</div><div class="rain" id="ciRain">Loading…</div></div>
+            <div class="weatherbox"><h4>GHANA<br><span style="color:#83929a">Kumasi region</span></h4><div class="temp" id="ghTemp">--°C</div><div class="rain" id="ghRain">Loading…</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:10px">
+          <h3>MARKET DATA CHECK</h3>
+          <div class="news">
+            <div class="newsitem"><span class="time">Browser check</span><b id="priceSource">Waiting for market source…</b><span class="tag" id="priceSourceTag">CHECKING</span></div>
+            <div class="newsitem"><span class="time">1D move</span><b id="dayMove">—</b><span class="tag" id="dayMoveTag">—</span></div>
+            <div class="newsitem"><span class="time">RSI proxy</span><b id="rsiProxy">—</b><span class="tag" id="rsiTag">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card scores">
+        <div class="score"><small>TECHNICAL</small><strong id="technicalScore" style="color:var(--red)">-6/10</strong><span id="technicalLabel" class="bear">Bearish</span></div>
+        <div class="score"><small>FUNDAMENTAL</small><strong style="color:var(--green)">+4/10</strong><span class="bull">Bullish</span></div>
+        <div class="score"><small>WEATHER / CROP</small><strong id="weatherScore" style="color:var(--green)">+7/10</strong><span id="weatherLabel" class="bull">Bullish</span></div>
+        <div class="score"><small>NEWS SENTIMENT</small><strong style="color:var(--green)">+5/10</strong><span class="bull">Bullish</span></div>
+        <div class="score"><small>NEWS / PRICE REACTION</small><strong style="color:var(--red)">-8/10</strong><span class="bear">Bearish</span></div>
+        <div class="score"><small>POSITIONING (COT)</small><strong style="color:var(--red)">-6/10</strong><span class="bear">Crowded long</span></div>
+      </div>
+
+
+      <section class="card fullspan">
+        <div class="section-title"><h3>MULTI-TIMEFRAME SCANNER</h3><span class="pill" id="mtfAgreement">3/5 bearish</span></div>
+        <div class="tf-grid" id="tfGrid">
+          <div class="tf"><div class="name">5m</div><div class="dir bear">BEARISH</div><div class="meta">RSI 41 • Momentum ↓</div></div>
+          <div class="tf"><div class="name">15m</div><div class="dir bear">BEARISH</div><div class="meta">RSI 38 • Lower highs</div></div>
+          <div class="tf"><div class="name">1h</div><div class="dir bear">BEARISH</div><div class="meta">Trend ↓ • ATR high</div></div>
+          <div class="tf"><div class="name">4h</div><div class="dir" style="color:var(--amber)">NEUTRAL</div><div class="meta">Range • Support nearby</div></div>
+          <div class="tf"><div class="name">1D</div><div class="dir bull">BULLISH</div><div class="meta">Higher-timeframe recovery</div></div>
+        </div>
+      </section>
+
+      <section class="card fullspan">
+        <div class="section-title"><h3>ENTRY QUALITY / DON'T-CHASE ENGINE</h3><span class="pill warn" id="chasePill">OVEREXTENDED</span></div>
+        <div class="entry-box">
+          <div class="entry-head">
+            <div>
+              <div class="entry-call wait" id="entryCall">WAIT — DO NOT CHASE</div>
+              <div style="color:#98a6ad;margin-top:4px" id="entryReason">Bearish bias remains, but price has already made a large downside move. Prefer a failed rebound/rejection rather than opening into exhaustion.</div>
+            </div>
+            <div style="text-align:right"><small style="color:#809099">Entry score</small><div style="font-size:34px;font-weight:900;color:var(--amber)" id="entryScore">38/100</div></div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini"><small>Preferred short setup</small><b id="preferredEntry">5,760–5,900 rejection</b></div>
+            <div class="mini"><small>Invalidation</small><b id="invalidLevel">Above 6,020</b></div>
+            <div class="mini"><small>Nearest support</small><b id="nearestSupport">5,520</b></div>
+            <div class="mini"><small>Nearest resistance</small><b id="nearestResistance">5,780</b></div>
+            <div class="mini"><small>Volatility</small><b class="high">HIGH</b></div>
+            <div class="mini"><small>Risk/reward now</small><b class="fair">POOR–FAIR</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card fullspan">
+        <div class="section-title"><h3>SUPPORT / RESISTANCE MAP</h3><span class="pill">Auto-estimate V0.2</span></div>
+        <div class="levels">
+          <div class="level-row"><span>Resistance 2</span><div class="level-bar"><span style="width:88%"></span></div><div class="level-val" id="r2">6,000</div></div>
+          <div class="level-row"><span>Resistance 1</span><div class="level-bar"><span style="width:66%"></span></div><div class="level-val" id="r1">5,780</div></div>
+          <div class="level-row"><span>Current</span><div class="level-bar"><span style="width:50%;background:var(--amber)"></span></div><div class="level-val" id="curLevel">5,637</div></div>
+          <div class="level-row"><span>Support 1</span><div class="level-bar"><span style="width:38%"></span></div><div class="level-val" id="s1">5,520</div></div>
+          <div class="level-row"><span>Support 2</span><div class="level-bar"><span style="width:18%"></span></div><div class="level-val" id="s2">5,350</div></div>
+        </div>
+      </section>
+
+      <section class="fullspan two-col">
+        <div class="card">
+          <div class="section-title"><h3>NEWS → PRICE REACTION</h3><span class="pill bad">DIVERGENCE WATCH</span></div>
+          <div class="reaction">
+            <div class="reaction-row"><div class="time">09:40</div><div class="reaction-title">Bullish crop-risk headline</div><div class="reaction-move bear">-0.8%</div></div>
+            <div class="reaction-row"><div class="time">07:10</div><div class="reaction-title">Weather concern repeated</div><div class="reaction-move bear">-0.3%</div></div>
+            <div class="reaction-row"><div class="time">Yesterday</div><div class="reaction-title">Supply concern headline</div><div class="reaction-move bull">+1.2%</div></div>
+            <div style="font-size:11px;color:#829099;margin-top:8px">Live event timestamps and +15m/+1h/+4h moves will be generated by the backend collector. Current rows show the final UI.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title"><h3>PRICED-IN METER</h3><span class="pill warn">HIGH</span></div>
+          <div class="priced">
+            <div style="display:flex;justify-content:space-between;margin-bottom:7px"><b>72% likely priced in</b><span style="color:var(--amber)">HIGH</span></div>
+            <div class="meter"><span></span></div>
+            <p style="color:#96a4ab;font-size:12px;line-height:1.45">Repeated bullish crop/weather narratives have already driven substantial prior upside. Failure to react positively to similar headlines increases sell-the-news risk.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card fullspan">
+        <div class="section-title"><h3>COCOA BELT WEATHER RISK</h3><span class="pill good">OPEN-METEO READY</span></div>
+        <div class="cities">
+          <div class="city"><div class="cname">San-Pédro, Côte d’Ivoire</div><div class="risk" id="w1risk">Loading…</div><div class="tiny" id="w1meta">Rain / temperature</div></div>
+          <div class="city"><div class="cname">Daloa, Côte d’Ivoire</div><div class="risk" id="w2risk">Loading…</div><div class="tiny" id="w2meta">Rain / temperature</div></div>
+          <div class="city"><div class="cname">Kumasi, Ghana</div><div class="risk" id="w3risk">Loading…</div><div class="tiny" id="w3meta">Rain / temperature</div></div>
+          <div class="city"><div class="cname">Sunyani, Ghana</div><div class="risk" id="w4risk">Loading…</div><div class="tiny" id="w4meta">Rain / temperature</div></div>
+        </div>
+      </section>
+
+      <section class="fullspan three-col">
+        <div class="card">
+          <div class="section-title"><h3>MARKET REGIME</h3><span class="pill warn">AUTO</span></div>
+          <div class="regime"><div><strong id="regimeText">HIGH VOLATILITY</strong><br><small id="regimeMeta">News-driven • unstable intraday structure</small></div><div style="font-size:30px">⚡</div></div>
+        </div>
+        <div class="card">
+          <div class="section-title"><h3>UPCOMING CATALYSTS</h3><span class="pill">Calendar</span></div>
+          <div class="calendar">
+            <div class="event"><div class="date">Weekly</div><div><b>CFTC cocoa positioning</b><br><span style="color:#7f8e95;font-size:10px">Crowding / speculative positioning</span></div><span class="pill">COT</span></div>
+            <div class="event"><div class="date">Quarterly</div><div><b>ICCO / grindings updates</b><br><span style="color:#7f8e95;font-size:10px">Supply / demand revisions</span></div><span class="pill">FUND</span></div>
+            <div class="event"><div class="date">Daily</div><div><b>West Africa weather changes</b><br><span style="color:#7f8e95;font-size:10px">Rain, heat, dry-spell risk</span></div><span class="pill">WX</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title"><h3>WHAT CHANGED?</h3><span class="pill good">LATEST SCAN</span></div>
+          <div class="changed" id="changedList">
+            <div class="change"><span class="chg-dot down"></span><div><b>Price momentum weakened</b><div class="note">Short-term move remains negative.</div></div></div>
+            <div class="change"><span class="chg-dot warn"></span><div><b>Entry quality deteriorated</b><div class="note">Large move already occurred; chase risk increased.</div></div></div>
+            <div class="change"><span class="chg-dot up"></span><div><b>Weather risk still supportive</b><div class="note">Crop-risk backdrop prevents high-conviction short.</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="fullspan two-col">
+        <div class="card">
+          <div class="section-title"><h3>AI ANALYST REPORT</h3><span class="pill warn">EXPLAINABLE</span></div>
+          <div class="analyst">
+            <div class="headline">Bearish direction, poor immediate entry.</div>
+            <div><b>Current interpretation:</b> short-term price action is weak and bullish headlines are not producing the response they previously did. However, the market is already extended lower and higher-timeframe crop/weather risk remains supportive.</div>
+            <br>
+            <div><b>Preferred action:</b> NO TRADE while price is exhausted. Reassess after a rebound into resistance, a failed reclaim, or a clean break-and-retest of support.</div>
+            <br>
+            <div style="font-size:11px;color:#829099">This report is still rule-generated in V0.2. The LLM backend will later rebuild it from live news, fundamentals, weather and price reaction.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title"><h3>ALERT CENTRE</h3><span class="pill">3 ARMED</span></div>
+          <div class="alertbox">
+            <div class="alert-item">🔴 Alert if cocoa rebounds above <b>5,780</b> then rejects back below.</div>
+            <div class="alert-item">🟢 Alert if cocoa reclaims <b>6,000</b> with positive news reaction.</div>
+            <div class="alert-item">⚠ Alert if 24h move exceeds <b>±5%</b> — activate don't-chase mode.</div>
+            <button class="btn" onclick="testAlert()">TEST ALERT</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="lower">
+        <div class="card">
+          <h3>HISTORICAL SIMILAR SETUPS</h3>
+          <div class="history">
+            <div class="donut"></div>
+            <div style="text-align:center"><b>47 similar setups</b><div class="bull">31 moved higher (66%)</div><div class="bear">16 moved lower (34%)</div><br><small style="color:#92a0a7">Demo values until historical engine is connected.</small></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>RECENT PREDICTIONS</h3>
+          <div style="overflow:auto"><table id="predTable">
+            <thead><tr><th>Date / Time</th><th>Prediction</th><th>Confidence</th><th>Price</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <h3>PERFORMANCE SUMMARY</h3>
+          <div class="perf">
+            <div class="p"><small>Total predictions</small><b id="totalPred">0</b></div>
+            <div class="p"><small>Win rate</small><b style="color:var(--green)">—</b></div>
+            <div class="p"><small>Avg return / trade</small><b style="color:var(--green)">—</b></div>
+            <div class="p"><small>Profit factor</small><b style="color:var(--green)">—</b></div>
+          </div>
+          <div style="padding:0 12px 12px;color:#7f8e95;font-size:12px">Performance activates once automatic grading is connected.</div>
+        </div>
+      </section>
+
+      <section class="card fullspan" style="margin-top:10px">
+        <div class="section-title"><h3>PREDICTION JOURNAL — IMMUTABLE SNAPSHOTS</h3><span class="pill good">LOCAL V0.2</span></div>
+        <div class="journal-wrap">
+          <table id="journalTable">
+            <thead><tr><th>Created</th><th>Call</th><th>Confidence</th><th>Price</th><th>Technical</th><th>Weather</th><th>Entry</th><th>24h grade</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card fullspan" style="margin-top:10px">
+        <div class="section-title"><h3>AI PERFORMANCE / SIGNAL ACCURACY</h3><span class="pill">Activates with grading</span></div>
+        <div class="acc-grid">
+          <div class="acc"><small>All predictions</small><b id="perfAll">—</b><div class="spark" id="spark1"></div></div>
+          <div class="acc"><small>High confidence ≥70%</small><b id="perfHigh">—</b><div class="spark" id="spark2"></div></div>
+          <div class="acc"><small>News-price divergence</small><b>Demo 75%</b><div class="spark" id="spark3"></div></div>
+          <div class="acc"><small>After ±5% days</small><b>Demo 68%</b><div class="spark" id="spark4"></div></div>
+        </div>
+      </section>
+
+      <div class="footer-note">COCOA AI V1 • analysis dashboard prototype • no automatic trading • live backend/LLM/database not yet connected</div>
+
+    </section>
+  </main>
+</div>
+
+<div class="mobile-tabs"><a class="active">Dashboard</a><a>Chart</a><a>AI Signal</a><a>News</a><a>History</a></div>
+
+<script>
+const $=id=>document.getElementById(id);
+
+function nowText(){
+  const d=new Date(); return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+" UTC";
+}
+$('lastUpdate').textContent=nowText();
+
+function setPrice(){
+  let v=parseFloat($('priceInput').value);
+  if(!Number.isFinite(v)) return;
+  $('topPrice').textContent=v.toLocaleString(undefined,{maximumFractionDigits:2});
+  localStorage.setItem('cocoa_price', String(v));
+}
+const savedPrice=localStorage.getItem('cocoa_price');
+if(savedPrice){ $('priceInput').value=savedPrice; setPrice(); }
+
+async function loadWeather(){
+  const locs=[
+    {lat:5.36,lon:-4.01,temp:'ciTemp',rain:'ciRain'},
+    {lat:6.69,lon:-1.62,temp:'ghTemp',rain:'ghRain'}
+  ];
+  for(const l of locs){
+    try{
+      const u=`https://api.open-meteo.com/v1/forecast?latitude=${l.lat}&longitude=${l.lon}&current=temperature_2m,precipitation&daily=precipitation_sum&timezone=auto&forecast_days=7`;
+      const r=await fetch(u); const j=await r.json();
+      $(l.temp).textContent=Math.round(j.current.temperature_2m)+'°C';
+      const total=(j.daily.precipitation_sum||[]).reduce((a,b)=>a+(b||0),0);
+      $(l.rain).textContent=`Current rain ${j.current.precipitation} mm • 7d total ${total.toFixed(1)} mm`;
+    }catch(e){ $(l.rain).textContent='Weather unavailable'; }
+  }
+}
+loadWeather();
+
+async function fetchJson(url){
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return await r.json();
+}
+
+// Try several public browser-friendly market endpoints. If blocked by CORS,
+// the dashboard falls back gracefully and the server-side backend will replace this later.
+async function loadMarketData(){
+  const symbol = 'CC=F';
+  const endpoints = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1mo`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1mo`
+  ];
+
+  let data=null, source='';
+  for(const u of endpoints){
+    try{
+      const j = await fetchJson(u);
+      const r = j.chart && j.chart.result && j.chart.result[0];
+      if(r){ data=r; source='Yahoo Finance delayed'; break; }
+    }catch(e){}
+  }
+
+  if(!data){
+    $('priceSource').textContent='Browser price feed blocked — TradingView chart still live.';
+    $('priceSourceTag').textContent='BACKEND NEEDED';
+    $('priceSourceTag').className='tag bear';
+    return;
+  }
+
+  const q = data.indicators?.quote?.[0] || {};
+  const closes = (q.close || []).filter(v => Number.isFinite(v));
+  if(closes.length < 2) return;
+
+  const last = closes[closes.length-1];
+  const prev = closes[closes.length-2];
+  const move = ((last-prev)/prev)*100;
+
+  $('priceInput').value = last.toFixed(2);
+  setPrice();
+  $('priceSource').textContent = source + ' • ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  $('priceSourceTag').textContent='CONNECTED';
+  $('priceSourceTag').className='tag bull';
+
+  $('dayMove').textContent = `${move>=0?'+':''}${move.toFixed(2)}%`;
+  $('dayMoveTag').textContent = move>1 ? 'BULLISH' : move<-1 ? 'BEARISH' : 'NEUTRAL';
+  $('dayMoveTag').className = 'tag ' + (move>1?'bull':move<-1?'bear':'');
+
+  // RSI(14) from daily closes
+  if(closes.length >= 15){
+    let gains=0, losses=0;
+    for(let i=closes.length-14;i<closes.length;i++){
+      const d=closes[i]-closes[i-1];
+      if(d>0) gains += d; else losses -= d;
+    }
+    const avgGain=gains/14, avgLoss=losses/14;
+    const rsi = avgLoss===0 ? 100 : 100-(100/(1+(avgGain/avgLoss)));
+    $('rsiProxy').textContent = `RSI(14) ${rsi.toFixed(1)}`;
+    $('rsiTag').textContent = rsi<30?'OVERSOLD':rsi>70?'OVERBOUGHT':'NEUTRAL';
+    $('rsiTag').className = 'tag ' + (rsi<30?'bull':rsi>70?'bear':'');
+  }
+
+  // Demo dynamic technical score driven by live daily move and RSI only.
+  let tech=0;
+  tech += Math.max(-5, Math.min(5, move*1.4));
+  const rsiText = $('rsiProxy').textContent.match(/([\d.]+)$/);
+  const rsi = rsiText ? parseFloat(rsiText[1]) : 50;
+  if(rsi<30) tech += 2;
+  if(rsi>70) tech -= 2;
+  tech = Math.round(Math.max(-10,Math.min(10,tech)));
+  $('technicalScore').textContent = `${tech>0?'+':''}${tech}/10`;
+  $('technicalScore').style.color = tech>1?'var(--green)':tech<-1?'var(--red)':'var(--amber)';
+  $('technicalLabel').textContent = tech>1?'Bullish':tech<-1?'Bearish':'Neutral';
+  $('technicalLabel').className = tech>1?'bull':tech<-1?'bear':'';
+}
+loadMarketData();
+
+// GDELT public search endpoint for recent cocoa headlines.
+// This is discovery only; V1 backend will deduplicate, classify and store articles.
+async function loadNews(){
+  const box = $('newsFeed');
+  const esc = s => String(s || '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+
+  // 1) GDELT
+  try {
+    const q = encodeURIComponent('(cocoa OR cacao) (Ghana OR "Ivory Coast" OR "Cote d Ivoire" OR futures OR crop)');
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=ArtList&maxrecords=6&format=json&sort=HybridRel`;
+    const j = await fetchJson(url);
+    const arts = (j.articles || []).slice(0, 6);
+    if (arts.length) {
+      box.innerHTML = arts.map(a => {
+        const t = esc((a.seendate || '').replace('T',' ').slice(0,16) || 'Recent');
+        const title = esc(a.title || 'Untitled');
+        const dom = esc(a.domain || 'source');
+        return `<div class="newsitem"><span class="time">${t}</span><b>${title}</b><span class="tag bull">${dom}</span></div>`;
+      }).join('');
+      return;
+    }
+  } catch(e) {}
+
+  // 2) Google News RSS via rss2json public endpoint.
+  try {
+    const googleRss = 'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('cocoa OR cacao Ghana OR "Ivory Coast" when:7d') +
+      '&hl=en-GB&gl=GB&ceid=GB:en';
+    const rssUrl = 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(googleRss);
+    const j = await fetchJson(rssUrl);
+    const items = (j.items || []).slice(0, 6);
+    if (items.length) {
+      box.innerHTML = items.map(a => {
+        const t = esc((a.pubDate || '').slice(0,16) || 'Recent');
+        const title = esc(a.title || 'Untitled');
+        return `<div class="newsitem"><span class="time">${t}</span><b>${title}</b><span class="tag bull">Google News</span></div>`;
+      }).join('');
+      return;
+    }
+  } catch(e) {}
+
+  box.innerHTML = `<div class="newsitem"><span class="time">News feed</span><b>Public browser news endpoints unavailable. Server-side collector is the next backend step.</b><span class="tag bear">BACKEND NEEDED</span></div>`;
+}
+loadNews();
+
+// Weather score: deliberately simple V0.1 heuristic based on 7d rainfall.
+// This is NOT the final crop model.
+async function updateWeatherScore(){
+  try{
+    const urls=[
+      'https://api.open-meteo.com/v1/forecast?latitude=5.36&longitude=-4.01&daily=precipitation_sum&timezone=auto&forecast_days=7',
+      'https://api.open-meteo.com/v1/forecast?latitude=6.69&longitude=-1.62&daily=precipitation_sum&timezone=auto&forecast_days=7'
+    ];
+    const vals=[];
+    for(const u of urls){
+      const j=await fetchJson(u);
+      vals.push((j.daily.precipitation_sum||[]).reduce((a,b)=>a+(b||0),0));
+    }
+    const avg=(vals[0]+vals[1])/2;
+    let score=0, label='Neutral';
+    // For now this is a risk score, not a crop-yield claim.
+    if(avg<15){score=4;label='Dry-risk bullish';}
+    else if(avg>100){score=3;label='Excess-rain risk';}
+    else {score=0;label='Normal range';}
+    $('weatherScore').textContent=`${score>0?'+':''}${score}/10`;
+    $('weatherLabel').textContent=label;
+    $('weatherLabel').className=score>0?'bull':'';
+  }catch(e){}
+}
+updateWeatherScore();
+
+function getPreds(){ try{return JSON.parse(localStorage.getItem('cocoa_predictions')||'[]')}catch{return[]} }
+function renderPreds(){
+  const arr=getPreds().slice().reverse();
+  $('predTable').querySelector('tbody').innerHTML = arr.length ? arr.map(p=>`<tr><td>${p.time}</td><td style="color:#ffbd2e">${p.pred}</td><td>${p.conf}%</td><td>${p.price}</td></tr>`).join('') : `<tr><td colspan="4" style="color:#7d8b92">No predictions saved yet.</td></tr>`;
+  $('totalPred').textContent=arr.length;
+}
+function savePrediction(){
+  const arr=getPreds();
+  const p={
+    time:new Date().toLocaleString(),
+    pred:document.querySelector('.mode').textContent.replace('◉','').trim()+' / '+document.querySelector('.bias b').textContent+' BIAS',
+    conf:parseInt(document.querySelector('.confidence').textContent)||63,
+    price:parseFloat($('priceInput').value)||5637,
+    technical:$('technicalScore').textContent,
+    weather:$('weatherScore').textContent,
+    entry:$('entryCall').textContent
+  };
+  arr.push(p); localStorage.setItem('cocoa_predictions',JSON.stringify(arr)); renderPreds();
+  alert('Prediction saved on this device. V1 will store these in Supabase so they are permanent across devices.');
+}
+function fmt(v){return Number(v).toLocaleString(undefined,{maximumFractionDigits:2})}
+
+function updateLevels(){
+  const p=parseFloat($('priceInput').value)||5637;
+  // Simple percentage-derived placeholders until candle-based backend is connected.
+  const r1v=p*1.025, r2v=p*1.065, s1v=p*0.979, s2v=p*0.949;
+  $('curLevel').textContent=fmt(p);
+  $('r1').textContent=fmt(r1v); $('r2').textContent=fmt(r2v); $('s1').textContent=fmt(s1v); $('s2').textContent=fmt(s2v);
+  $('nearestSupport').textContent=fmt(s1v);
+  $('nearestResistance').textContent=fmt(r1v);
+  $('preferredEntry').textContent=`${fmt(r1v)}–${fmt(p*1.045)} rejection`;
+  $('invalidLevel').textContent=`Above ${fmt(r2v)}`;
+}
+updateLevels();
+
+const originalSetPrice=setPrice;
+setPrice=function(){ originalSetPrice(); updateLevels(); updateEntryEngine(); }
+
+function updateEntryEngine(){
+  const moveTxt=$('dayMove').textContent||'';
+  const m=parseFloat(moveTxt.replace('%',''))||0;
+  let score=62, call='WAIT', reason='Bias is mixed. Wait for cleaner confirmation.', pill='WAIT', cls='wait';
+  if(Math.abs(m)>=5){
+    score=30; call='WAIT — DO NOT CHASE'; pill='OVEREXTENDED'; cls='wait';
+    reason=`The market has already moved ${Math.abs(m).toFixed(1)}% in 24h. Direction may still be valid, but fresh entries have poor chase risk.`;
+  } else if(m<-1.5){
+    score=58; call='WAIT FOR REBOUND / REJECTION'; pill='BEARISH BIAS'; cls='wait';
+    reason='Momentum is bearish, but a failed rebound offers a cleaner short than selling directly into weakness.';
+  } else if(m>1.5){
+    score=58; call='WAIT FOR PULLBACK / HOLD'; pill='BULLISH BIAS'; cls='wait';
+    reason='Momentum is bullish, but a pullback/hold gives a cleaner long than chasing an extended candle.';
+  } else {
+    score=46; call='NO TRADE — RANGE'; pill='RANGE'; cls='wait';
+    reason='No strong directional expansion. Wait for a break, retest or meaningful catalyst.';
+  }
+  $('entryCall').textContent=call; $('entryCall').className='entry-call '+cls;
+  $('entryReason').textContent=reason; $('entryScore').textContent=score+'/100'; $('chasePill').textContent=pill;
+}
+updateEntryEngine();
+
+async function loadCocoaBeltWeather(){
+  const pts=[
+    {lat:4.75,lon:-6.64,r:'w1risk',m:'w1meta'}, // San-Pedro
+    {lat:6.88,lon:-6.45,r:'w2risk',m:'w2meta'}, // Daloa
+    {lat:6.69,lon:-1.62,r:'w3risk',m:'w3meta'}, // Kumasi
+    {lat:7.34,lon:-2.33,r:'w4risk',m:'w4meta'}  // Sunyani
+  ];
+  for(const x of pts){
+    try{
+      const u=`https://api.open-meteo.com/v1/forecast?latitude=${x.lat}&longitude=${x.lon}&current=temperature_2m&daily=precipitation_sum,temperature_2m_max&timezone=auto&forecast_days=7`;
+      const j=await fetchJson(u);
+      const rain=(j.daily.precipitation_sum||[]).reduce((a,b)=>a+(b||0),0);
+      const tmax=Math.max(...(j.daily.temperature_2m_max||[0]));
+      let risk='NORMAL', c='var(--green)';
+      if(rain<15){risk='DRY RISK'; c='var(--amber)';}
+      else if(rain>110){risk='WET RISK'; c='var(--amber)';}
+      if(tmax>34){risk='HEAT RISK'; c='var(--red)';}
+      $(x.r).textContent=risk; $(x.r).style.color=c;
+      $(x.m).textContent=`7d rain ${rain.toFixed(0)} mm • max ${tmax.toFixed(0)}°C`;
+    }catch(e){$(x.r).textContent='UNAVAILABLE';$(x.m).textContent='Backend fallback needed';}
+  }
+}
+loadCocoaBeltWeather();
+
+function testAlert(){
+  alert('COCOA AI ALERT TEST\\nSignal monitoring is armed in the UI. Phone push notifications will be connected once the cloud backend is deployed.');
+}
+
+function renderJournal(){
+  const arr=getPreds().slice().reverse();
+  const body=$('journalTable').querySelector('tbody');
+  body.innerHTML=arr.length?arr.map(p=>`<tr>
+    <td>${p.time}</td><td>${p.pred}</td><td>${p.conf}%</td><td>${p.price}</td>
+    <td>${p.technical||'—'}</td><td>${p.weather||'—'}</td><td>${p.entry||'—'}</td><td>Pending</td>
+  </tr>`).join(''):`<tr><td colspan="8" style="color:#7d8b92">Save a prediction to create the first immutable journal snapshot.</td></tr>`;
+  $('perfAll').textContent=arr.length ? `${arr.length} logged` : '—';
+  $('perfHigh').textContent=arr.filter(x=>(x.conf||0)>=70).length ? `${arr.filter(x=>(x.conf||0)>=70).length} logged` : '—';
+}
+const oldRenderPreds=renderPreds;
+renderPreds=function(){oldRenderPreds();renderJournal();}
+renderJournal();
+
+function makeSpark(id, vals){
+  const el=$(id); if(!el) return;
+  el.innerHTML=vals.map(v=>`<i style="height:${v}%"></i>`).join('');
+}
+makeSpark('spark1',[20,28,25,34,40,38,47,53,49,60,64,61,70,74]);
+makeSpark('spark2',[18,22,32,26,40,46,44,55,58,63,60,68,72,79]);
+makeSpark('spark3',[30,35,32,42,50,48,55,58,62,68,65,72,76,82]);
+makeSpark('spark4',[25,30,28,34,37,45,42,50,56,59,63,61,68,72]);
+
+function updateRegime(){
+  const move=parseFloat(($('dayMove').textContent||'0').replace('%',''))||0;
+  let txt='RANGE', meta='Low directional conviction';
+  if(Math.abs(move)>=4){txt='HIGH VOLATILITY';meta='Large daily expansion • chase risk elevated';}
+  else if(move>1.5){txt='TRENDING UP';meta='Positive directional momentum';}
+  else if(move<-1.5){txt='TRENDING DOWN';meta='Negative directional momentum';}
+  $('regimeText').textContent=txt; $('regimeMeta').textContent=meta;
+}
+setInterval(updateRegime,2500); updateRegime();
+
+
+// ---------------- COCOA AI OWN CANVAS CHART ----------------
+const chartState = {
+  tf:'4h',
+  showMA:true,
+  showLevels:true,
+  candles:{}
+};
+
+function seededRandom(seed){
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function makeDemoCandles(tf, currentPrice){
+  const count = tf==='1D' ? 90 : tf==='4h' ? 110 : tf==='1h' ? 120 : 130;
+  const rand = seededRandom(
+    tf.split('').reduce((a,c)=>a+c.charCodeAt(0),0) + Math.round(currentPrice)
+  );
+  let p = currentPrice * (tf==='1D' ? 0.78 : tf==='4h' ? 0.90 : 0.96);
+  const arr=[];
+  const drift = tf==='1D' ? 0.0045 : tf==='4h' ? 0.0014 : 0.00035;
+  const vol = tf==='1D' ? 0.035 : tf==='4h' ? 0.018 : tf==='1h' ? 0.011 : 0.007;
+  for(let i=0;i<count;i++){
+    const wave = Math.sin(i/8)*vol*0.18 + Math.sin(i/21)*vol*0.12;
+    const shock = (rand()-0.5)*vol + wave + drift;
+    const o = p;
+    const c = Math.max(100, o*(1+shock));
+    const hi = Math.max(o,c)*(1+rand()*vol*0.55);
+    const lo = Math.min(o,c)*(1-rand()*vol*0.55);
+    arr.push({o,h:hi,l:lo,c});
+    p=c;
+  }
+  const scale = currentPrice / arr[arr.length-1].c;
+  return arr.map(x=>({o:x.o*scale,h:x.h*scale,l:x.l*scale,c:x.c*scale}));
+}
+
+function ensureChartData(){
+  const p=parseFloat($('priceInput').value)||5637;
+  ['5m','15m','1h','4h','1D'].forEach(tf=>{
+    chartState.candles[tf]=makeDemoCandles(tf,p);
+  });
+}
+
+function sma(arr, period){
+  const out=[];
+  for(let i=0;i<arr.length;i++){
+    if(i<period-1){out.push(null);continue;}
+    let s=0; for(let j=i-period+1;j<=i;j++) s+=arr[j].c;
+    out.push(s/period);
+  }
+  return out;
+}
+
+function drawCocoaChart(){
+  const canvas=$('cocoaChart');
+  if(!canvas) return;
+  const wrap=canvas.parentElement;
+  const dpr=Math.max(1,window.devicePixelRatio||1);
+  const w=wrap.clientWidth, h=wrap.clientHeight;
+  canvas.width=Math.floor(w*dpr); canvas.height=Math.floor(h*dpr);
+  canvas.style.width=w+'px'; canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  const data=chartState.candles[chartState.tf]||[];
+  if(!data.length) return;
+
+  const pad={l:10,r:64,t:28,b:26};
+  const cw=w-pad.l-pad.r, ch=h-pad.t-pad.b;
+  let min=Math.min(...data.map(x=>x.l)), max=Math.max(...data.map(x=>x.h));
+  const extra=(max-min)*0.08; min-=extra; max+=extra;
+  const y=v=>pad.t+(max-v)/(max-min)*ch;
+  const step=cw/data.length;
+  const bodyW=Math.max(2,Math.min(7,step*0.62));
+
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='#0a1014'; ctx.fillRect(0,0,w,h);
+
+  // grid
+  ctx.strokeStyle='#18242a'; ctx.lineWidth=1;
+  ctx.fillStyle='#7f8c93'; ctx.font='10px system-ui';
+  for(let i=0;i<=5;i++){
+    const yy=pad.t+(ch/5)*i;
+    ctx.beginPath(); ctx.moveTo(pad.l,yy); ctx.lineTo(w-pad.r,yy); ctx.stroke();
+    const val=max-(max-min)*(i/5);
+    ctx.fillText(Math.round(val).toLocaleString(),w-pad.r+7,yy+3);
+  }
+  for(let i=0;i<=6;i++){
+    const xx=pad.l+(cw/6)*i;
+    ctx.beginPath(); ctx.moveTo(xx,pad.t); ctx.lineTo(xx,h-pad.b); ctx.stroke();
+  }
+
+  // support/resistance overlays
+  if(chartState.showLevels){
+    const levels=[
+      {v:parseFloat(($('r1')?.textContent||'').replace(/,/g,'')),label:'R1'},
+      {v:parseFloat(($('s1')?.textContent||'').replace(/,/g,'')),label:'S1'}
+    ].filter(x=>Number.isFinite(x.v));
+    ctx.setLineDash([5,5]);
+    levels.forEach((lv,idx)=>{
+      ctx.strokeStyle=idx===0?'rgba(255,79,69,.45)':'rgba(39,212,92,.45)';
+      const yy=y(lv.v);
+      ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();
+      ctx.fillStyle=idx===0?'#ff6a61':'#3ddb6b';
+      ctx.fillText(`${lv.label} ${Math.round(lv.v).toLocaleString()}`,pad.l+5,yy-5);
+    });
+    ctx.setLineDash([]);
+  }
+
+  // moving average
+  if(chartState.showMA){
+    const ma=sma(data,20);
+    ctx.strokeStyle='#f0ad2d'; ctx.lineWidth=1.5; ctx.beginPath();
+    ma.forEach((v,i)=>{
+      if(v==null)return;
+      const xx=pad.l+i*step+step/2, yy=y(v);
+      if(i===19)ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+    });ctx.stroke();
+  }
+
+  // candles
+  data.forEach((c,i)=>{
+    const xx=pad.l+i*step+step/2;
+    const up=c.c>=c.o;
+    const col=up?'#16c784':'#ea3943';
+    ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(xx,y(c.h));ctx.lineTo(xx,y(c.l));ctx.stroke();
+    const yo=y(c.o), yc=y(c.c);
+    const top=Math.min(yo,yc), bh=Math.max(1,Math.abs(yc-yo));
+    ctx.fillRect(xx-bodyW/2,top,bodyW,bh);
+  });
+
+  // last price line
+  const last=data[data.length-1];
+  const ly=y(last.c);
+  ctx.setLineDash([3,3]);ctx.strokeStyle='#27d45c';ctx.beginPath();ctx.moveTo(pad.l,ly);ctx.lineTo(w-pad.r,ly);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#27d45c';ctx.fillRect(w-pad.r+2,ly-9,58,18);
+  ctx.fillStyle='#06120a';ctx.font='bold 10px system-ui';ctx.fillText(Math.round(last.c).toLocaleString(),w-pad.r+8,ly+3);
+
+  // labels
+  $('legendO').textContent='O '+fmt(last.o);
+  $('legendH').textContent='H '+fmt(last.h);
+  $('legendL').textContent='L '+fmt(last.l);
+  $('legendC').textContent='C '+fmt(last.c);
+  $('chartLastPrice').textContent=fmt(last.c);
+}
+
+function initOwnChart(){
+  ensureChartData();
+  document.querySelectorAll('#chartTfButtons button').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      document.querySelectorAll('#chartTfButtons button').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      chartState.tf=btn.dataset.tf;
+      drawCocoaChart();
+    });
+  });
+  $('toggleMA')?.classList.add('active');
+  $('toggleMA')?.addEventListener('click',()=>{
+    chartState.showMA=!chartState.showMA;
+    $('toggleMA').classList.toggle('active',chartState.showMA);
+    drawCocoaChart();
+  });
+  $('toggleLevels')?.addEventListener('click',()=>{
+    chartState.showLevels=!chartState.showLevels;
+    $('toggleLevels').classList.toggle('active',chartState.showLevels);
+    drawCocoaChart();
+  });
+
+  let hoverIndex=null;
+  const canvas=$('cocoaChart');
+  canvas.addEventListener('pointermove',e=>{
+    const rect=canvas.getBoundingClientRect();
+    const data=chartState.candles[chartState.tf]||[];
+    const usable=rect.width-74;
+    const i=Math.max(0,Math.min(data.length-1,Math.floor((e.clientX-rect.left-10)/(usable/data.length))));
+    const c=data[i];
+    if(c){
+      $('legendO').textContent='O '+fmt(c.o);
+      $('legendH').textContent='H '+fmt(c.h);
+      $('legendL').textContent='L '+fmt(c.l);
+      $('legendC').textContent='C '+fmt(c.c);
+    }
+  });
+  canvas.addEventListener('pointerleave',drawCocoaChart);
+
+  window.addEventListener('resize',()=>requestAnimationFrame(drawCocoaChart));
+  drawCocoaChart();
+}
+
+const oldUpdateLevels=updateLevels;
+updateLevels=function(){
+  oldUpdateLevels();
+  ensureChartData();
+  drawCocoaChart();
+};
+
+initOwnChart();
+// -----------------------------------------------------------
+
+// ==================== COCOA AI V1 BACKEND ====================
+const API_BASE = ''; // Same-origin when deployed.
+
+async function apiGet(path){
+  const r = await fetch(API_BASE + path, {cache:'no-store'});
+  if(!r.ok) throw new Error(`API ${r.status}`);
+  return await r.json();
+}
+
+function intervalForTf(tf){
+  return {'5m':'5m','15m':'15m','1h':'1h','4h':'1h','1D':'1d'}[tf] || '1h';
+}
+function rangeForTf(tf){
+  return {'5m':'5d','15m':'5d','1h':'1mo','4h':'3mo','1D':'2y'}[tf] || '1mo';
+}
+function aggregateCandles(candles, group){
+  if(group<=1) return candles;
+  const out=[];
+  for(let i=0;i<candles.length;i+=group){
+    const g=candles.slice(i,i+group);
+    if(!g.length) continue;
+    out.push({
+      t:g[0].t,
+      o:g[0].o,
+      h:Math.max(...g.map(x=>x.h)),
+      l:Math.min(...g.map(x=>x.l)),
+      c:g[g.length-1].c,
+      v:g.reduce((a,x)=>a+(x.v||0),0)
+    });
+  }
+  return out;
+}
+
+async function loadRealCandles(tf){
+  const interval=intervalForTf(tf);
+  const range=rangeForTf(tf);
+  try{
+    $('chartStatusText').textContent=`Loading real ${tf} cocoa candles…`;
+    const j=await apiGet(`/api/candles?interval=${encodeURIComponent(interval)}&range=${encodeURIComponent(range)}`);
+    let candles=(j.candles||[]).map(x=>({t:x.t,o:x.o,h:x.h,l:x.l,c:x.c,v:x.v||0}));
+    if(tf==='4h') candles=aggregateCandles(candles,4);
+    if(!candles.length) throw new Error('No candles');
+    chartState.candles[tf]=candles.slice(-160);
+    const last=candles[candles.length-1];
+    $('priceInput').value=Number(last.c).toFixed(2);
+    $('topPrice').textContent=Number(last.c).toLocaleString(undefined,{maximumFractionDigits:2});
+    $('chartStatusText').textContent=`REAL DATA • ${j.source||'server'} • ${j.delayed?'delayed':''}`;
+    $('chartSourcePill').textContent='REAL DATA';
+    $('chartSourcePill').className='pill good';
+    $('backendStatus').textContent='● BACKEND ONLINE';
+    $('backendStatus').style.color='var(--green)';
+    drawCocoaChart();
+    updateRealTechnical(j, candles);
+    return true;
+  }catch(e){
+    $('chartStatusText').textContent='Backend not deployed yet — showing prototype candles.';
+    $('chartSourcePill').textContent='DEMO FALLBACK';
+    $('chartSourcePill').className='pill warn';
+    $('backendStatus').textContent='● LOCAL PREVIEW';
+    $('backendStatus').style.color='var(--amber)';
+    return false;
+  }
+}
+
+function rsiFromCloses(closes, period=14){
+  if(closes.length<period+1) return null;
+  let gains=0,losses=0;
+  for(let i=closes.length-period;i<closes.length;i++){
+    const d=closes[i]-closes[i-1];
+    if(d>=0) gains+=d; else losses-=d;
+  }
+  const ag=gains/period, al=losses/period;
+  return al===0?100:100-(100/(1+ag/al));
+}
+
+function updateRealTechnical(meta, candles){
+  const closes=candles.map(x=>x.c).filter(Number.isFinite);
+  if(closes.length<2) return;
+  const last=closes[closes.length-1], prev=closes[closes.length-2];
+  const move=(last-prev)/prev*100;
+  const rsi=rsiFromCloses(closes,14);
+
+  $('dayMove').textContent=`${move>=0?'+':''}${move.toFixed(2)}%`;
+  $('dayMoveTag').textContent=move>1?'BULLISH':move<-1?'BEARISH':'NEUTRAL';
+  $('dayMoveTag').className='tag '+(move>1?'bull':move<-1?'bear':'');
+  if(rsi!=null){
+    $('rsiProxy').textContent=`RSI(14) ${rsi.toFixed(1)}`;
+    $('rsiTag').textContent=rsi<30?'OVERSOLD':rsi>70?'OVERBOUGHT':'NEUTRAL';
+    $('rsiTag').className='tag '+(rsi<30?'bull':rsi>70?'bear':'');
+  }
+  $('priceSource').textContent=`${meta.source||'Backend'} • ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+  $('priceSourceTag').textContent='CONNECTED';
+  $('priceSourceTag').className='tag bull';
+
+  let tech=Math.max(-6,Math.min(6,move*2));
+  if(rsi!=null && rsi<30) tech+=2;
+  if(rsi!=null && rsi>70) tech-=2;
+  tech=Math.round(Math.max(-10,Math.min(10,tech)));
+  $('technicalScore').textContent=`${tech>0?'+':''}${tech}/10`;
+  $('technicalScore').style.color=tech>1?'var(--green)':tech<-1?'var(--red)':'var(--amber)';
+  $('technicalLabel').textContent=tech>1?'Bullish':tech<-1?'Bearish':'Neutral';
+  $('technicalLabel').className=tech>1?'bull':tech<-1?'bear':'';
+  updateEntryEngine();
+  updateRegime();
+}
+
+async function loadBackendNews(){
+  const box=$('newsFeed');
+  try{
+    const j=await apiGet('/api/news');
+    const items=(j.items||[]).slice(0,8);
+    if(!items.length) throw new Error('No news');
+    const esc=s=>String(s||'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    box.innerHTML=items.map(a=>`<div class="newsitem">
+      <span class="time">${esc(a.published_at||'Recent')}</span>
+      <b>${esc(a.title)}</b>
+      <span class="tag bull">${esc(a.source||'News')}</span>
+    </div>`).join('');
+  }catch(e){
+    // Keep existing browser fallback result if it worked.
+  }
+}
+
+async function loadBackendWeather(){
+  try{
+    const j=await apiGet('/api/weather');
+    const map={san_pedro:['w1risk','w1meta'],daloa:['w2risk','w2meta'],kumasi:['w3risk','w3meta'],sunyani:['w4risk','w4meta']};
+    Object.entries(map).forEach(([key,ids])=>{
+      const x=j.locations?.[key]; if(!x) return;
+      $(ids[0]).textContent=x.risk_label;
+      $(ids[0]).style.color=x.risk_color||'var(--green)';
+      $(ids[1]).textContent=`7d rain ${x.rain_7d_mm.toFixed(0)} mm • max ${x.max_temp_c.toFixed(0)}°C`;
+    });
+  }catch(e){}
+}
+
+async function bootV1(){
+  // Try real data first. Keep current demo chart as fallback if server isn't deployed.
+  await loadRealCandles(chartState.tf);
+  await Promise.allSettled([loadBackendNews(), loadBackendWeather()]);
+}
+document.querySelectorAll('#chartTfButtons button').forEach(btn=>{
+  btn.addEventListener('click',()=>setTimeout(()=>loadRealCandles(btn.dataset.tf),0));
+});
+setTimeout(bootV1,250);
+// =============================================================
+
+renderPreds();
+</script>
+</body>
+</html>
