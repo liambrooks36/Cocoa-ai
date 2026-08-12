@@ -20,7 +20,7 @@ from openai import OpenAI
 # ============================================================
 
 ROOT = Path(__file__).parent
-app = FastAPI(title="Cocoa AI V1.3")
+app = FastAPI(title="Cocoa AI V1.6.1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -142,7 +142,7 @@ def health():
 
     return {
         "ok": True,
-        "service": "cocoa-ai-v1.3",
+        "service": "cocoa-ai-v1.6.1.1",
         "database_configured": bool(DATABASE_URL),
         "database_ok": db_ok,
         "database_error": db_error,
@@ -156,64 +156,123 @@ def health():
 # COCOA MARKET CANDLES
 # ============================================================
 
-@app.get("/api/candles")
-def candles(
-    interval: str = Query("1h", pattern="^(5m|15m|30m|60m|1h|1d)$"),
-    range: str = Query("1mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"),
-):
-    symbol = "CC=F"
-    yahoo_interval = "60m" if interval == "1h" else interval
+CANDLE_CACHE = {}
+CANDLE_CACHE_SECONDS = {
+    "1m": 20,
+    "5m": 30,
+    "15m": 45,
+    "30m": 60,
+    "60m": 60,
+    "1h": 60,
+    "1d": 300,
+}
 
-    url = (
-        "https://query1.finance.yahoo.com/"
-        "v8/finance/chart/"
-        f"{requests.utils.quote(symbol, safe='')}"
-    )
+
+def _cached_candles(interval, range_name):
+    key = (interval, range_name)
+    item = CANDLE_CACHE.get(key)
+    if not item:
+        return None
+
+    age = time.time() - item["timestamp"]
+    ttl = CANDLE_CACHE_SECONDS.get(interval, 60)
+
+    if age <= ttl:
+        data = dict(item["data"])
+        data["cached"] = True
+        data["cache_age_seconds"] = round(age, 1)
+        return data
+
+    return None
+
+
+def _stale_cached_candles(interval, range_name):
+    key = (interval, range_name)
+    item = CANDLE_CACHE.get(key)
+    if not item:
+        return None
+
+    data = dict(item["data"])
+    data["cached"] = True
+    data["stale"] = True
+    data["cache_age_seconds"] = round(time.time() - item["timestamp"], 1)
+    return data
+
+
+def _fetch_yahoo_chart(symbol, yahoo_interval, range_name):
+    last_error = None
 
     params = {
         "interval": yahoo_interval,
-        "range": range,
+        "range": range_name,
         "includePrePost": "false",
         "events": "div,splits",
     }
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.3)",
+        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.6.1)",
         "Accept": "application/json,text/plain,*/*",
+        "Cache-Control": "no-cache",
     }
 
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        url = (
+            f"https://{host}/v8/finance/chart/"
+            f"{requests.utils.quote(symbol, safe='')}"
+        )
+
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+
+            if resp.status_code == 429:
+                last_error = RuntimeError(f"{host} returned HTTP 429")
+                continue
+
+            resp.raise_for_status()
+            payload = resp.json()
+
+            chart = payload.get("chart", {})
+            if chart.get("error"):
+                last_error = RuntimeError(str(chart["error"]))
+                continue
+
+            results = chart.get("result") or []
+            if not results:
+                last_error = RuntimeError(f"{host} returned no chart result")
+                continue
+
+            return results[0], host
+
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        f"Both Yahoo chart hosts failed: {type(last_error).__name__}: {last_error}"
+    )
+
+
+@app.get("/api/candles")
+def candles(
+    interval: str = Query(
+        "1h",
+        pattern="^(1m|5m|15m|30m|60m|1h|1d)$"
+    ),
+    range: str = Query(
+        "1mo",
+        pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"
+    ),
+):
+    symbol = "CC=F"
+
+    cached = _cached_candles(interval, range)
+    if cached is not None:
+        return cached
+
+    yahoo_interval = "60m" if interval == "1h" else interval
+
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
+        result, yahoo_host = _fetch_yahoo_chart(symbol, yahoo_interval, range)
 
-        chart = payload.get("chart", {})
-
-        if chart.get("error"):
-            return {
-                "symbol": symbol,
-                "source": "Yahoo Finance chart API",
-                "delayed": True,
-                "interval": interval,
-                "range": range,
-                "candles": [],
-                "error": chart["error"],
-            }
-
-        results = chart.get("result") or []
-
-        if not results:
-            return {
-                "symbol": symbol,
-                "source": "Yahoo Finance chart API",
-                "delayed": True,
-                "interval": interval,
-                "range": range,
-                "candles": [],
-                "error": "Yahoo returned no chart result",
-            }
-
-        result = results[0]
         timestamps = result.get("timestamp") or []
         quote = (((result.get("indicators") or {}).get("quote") or [{}])[0])
 
@@ -250,12 +309,17 @@ def candles(
             except (TypeError, ValueError, IndexError):
                 continue
 
+        if not candles_out:
+            raise RuntimeError("Yahoo returned zero usable OHLC candles")
+
         meta = result.get("meta") or {}
 
-        return {
+        data = {
             "symbol": symbol,
-            "source": "Yahoo Finance chart API",
+            "source": f"Yahoo Finance chart API ({yahoo_host})",
             "delayed": True,
+            "cached": False,
+            "stale": False,
             "interval": interval,
             "range": range,
             "currency": meta.get("currency"),
@@ -264,11 +328,27 @@ def candles(
             "candles": candles_out,
         }
 
+        CANDLE_CACHE[(interval, range)] = {
+            "timestamp": time.time(),
+            "data": data,
+        }
+
+        return data
+
     except Exception as exc:
+        stale = _stale_cached_candles(interval, range)
+        if stale is not None:
+            stale["warning"] = (
+                f"Fresh Yahoo request failed: {type(exc).__name__}: {exc}"
+            )
+            return stale
+
         return {
             "symbol": symbol,
             "source": "Yahoo Finance chart API",
             "delayed": True,
+            "cached": False,
+            "stale": False,
             "interval": interval,
             "range": range,
             "candles": [],
@@ -332,7 +412,7 @@ def weather():
         }
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.3)",
+            "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.6.1.1)",
             "Accept": "application/json,text/plain,*/*",
         }
 
@@ -433,7 +513,7 @@ def news():
     }
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.3)",
+        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.6.1.1)",
     }
 
     try:
@@ -742,29 +822,38 @@ def market_metrics(candle_rows):
     if not candle_rows:
         return {}
 
-    closes = [float(x["c"]) for x in candle_rows if x.get("c") is not None]
-    highs = [float(x["h"]) for x in candle_rows if x.get("h") is not None]
-    lows = [float(x["l"]) for x in candle_rows if x.get("l") is not None]
-    volumes = [float(x.get("v") or 0) for x in candle_rows]
+    rows = [
+        x for x in candle_rows
+        if all(x.get(k) is not None for k in ("o", "h", "l", "c"))
+    ]
 
-    if len(closes) < 2:
+    if len(rows) < 2:
         return {}
+
+    closes = [float(x["c"]) for x in rows]
+    opens = [float(x["o"]) for x in rows]
+    highs = [float(x["h"]) for x in rows]
+    lows = [float(x["l"]) for x in rows]
+    volumes = [float(x.get("v") or 0) for x in rows]
 
     last = closes[-1]
     previous = closes[-2]
-
     latest_move = ((last - previous) / previous) * 100 if previous else 0
     rsi = calc_rsi(closes)
 
     sma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else None
     sma50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else None
 
+    move_3 = (
+        ((last - closes[-4]) / closes[-4]) * 100
+        if len(closes) >= 4 and closes[-4]
+        else None
+    )
     move_5 = (
         ((last - closes[-6]) / closes[-6]) * 100
         if len(closes) >= 6 and closes[-6]
         else None
     )
-
     move_10 = (
         ((last - closes[-11]) / closes[-11]) * 100
         if len(closes) >= 11 and closes[-11]
@@ -772,34 +861,84 @@ def market_metrics(candle_rows):
     )
 
     trend = "neutral"
-
     if sma20 is not None:
-        if last > sma20 * 1.003:
+        # Small threshold because this is a scalp engine.
+        if last > sma20 * 1.0015:
             trend = "bullish"
-        elif last < sma20 * 0.997:
+        elif last < sma20 * 0.9985:
             trend = "bearish"
 
-    avg_volume_20 = (
-        sum(volumes[-20:]) / 20
-        if len(volumes) >= 20
-        else None
+    avg_volume_20 = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else None
+
+    last3 = rows[-3:] if len(rows) >= 3 else rows
+    green_last3 = sum(1 for x in last3 if float(x["c"]) > float(x["o"]))
+    red_last3 = sum(1 for x in last3 if float(x["c"]) < float(x["o"]))
+
+    recent8 = rows[-8:]
+    green_last8 = sum(1 for x in recent8 if float(x["c"]) > float(x["o"]))
+    red_last8 = sum(1 for x in recent8 if float(x["c"]) < float(x["o"]))
+
+    higher_lows = len(rows) >= 3 and lows[-1] > lows[-2] > lows[-3]
+    lower_highs = len(rows) >= 3 and highs[-1] < highs[-2] < highs[-3]
+
+    prior_high_10 = (
+        max(highs[-11:-1])
+        if len(highs) >= 11
+        else max(highs[:-1])
+    )
+    prior_low_10 = (
+        min(lows[-11:-1])
+        if len(lows) >= 11
+        else min(lows[:-1])
+    )
+
+    breakout_up = last > prior_high_10
+    breakout_down = last < prior_low_10
+
+    sma20_reclaim_up = (
+        sma20 is not None
+        and previous <= sma20
+        and last > sma20
+    )
+    sma20_reclaim_down = (
+        sma20 is not None
+        and previous >= sma20
+        and last < sma20
     )
 
     return {
         "last_price": round(last, 2),
         "latest_candle_move_pct": round(latest_move, 3),
+        "move_3_bars_pct": round(move_3, 3) if move_3 is not None else None,
         "move_5_bars_pct": round(move_5, 3) if move_5 is not None else None,
         "move_10_bars_pct": round(move_10, 3) if move_10 is not None else None,
         "rsi_14": round(rsi, 2) if rsi is not None else None,
         "sma20": round(sma20, 2) if sma20 is not None else None,
         "sma50": round(sma50, 2) if sma50 is not None else None,
         "trend_vs_sma20": trend,
-        "recent_high_20": round(max(highs[-20:]), 2) if highs else None,
-        "recent_low_20": round(min(lows[-20:]), 2) if lows else None,
-        "recent_high_50": round(max(highs[-50:]), 2) if highs else None,
-        "recent_low_50": round(min(lows[-50:]), 2) if lows else None,
+        "recent_high_10": round(max(highs[-10:]), 2),
+        "recent_low_10": round(min(lows[-10:]), 2),
+        "recent_high_20": round(max(highs[-20:]), 2),
+        "recent_low_20": round(min(lows[-20:]), 2),
+        "recent_high_50": round(max(highs[-50:]), 2),
+        "recent_low_50": round(min(lows[-50:]), 2),
         "last_volume": round(volumes[-1], 2) if volumes else None,
         "avg_volume_20": round(avg_volume_20, 2) if avg_volume_20 is not None else None,
+        "volume_vs_avg20": (
+            round(volumes[-1] / avg_volume_20, 2)
+            if avg_volume_20
+            else None
+        ),
+        "green_candles_last_3": green_last3,
+        "red_candles_last_3": red_last3,
+        "green_candles_last_8": green_last8,
+        "red_candles_last_8": red_last8,
+        "three_higher_lows": higher_lows,
+        "three_lower_highs": lower_highs,
+        "breakout_above_prior_10_bar_high": breakout_up,
+        "breakdown_below_prior_10_bar_low": breakout_down,
+        "sma20_reclaim_up": sma20_reclaim_up,
+        "sma20_reclaim_down": sma20_reclaim_down,
         "candle_count": len(closes),
     }
 
@@ -809,23 +948,21 @@ def market_metrics(candle_rows):
 # ============================================================
 
 def build_ai_snapshot():
+    one_min = candles(interval="1m", range="1d")
     five_min = candles(interval="5m", range="5d")
     fifteen_min = candles(interval="15m", range="5d")
     one_hour = candles(interval="1h", range="1mo")
-    daily = candles(interval="1d", range="6mo")
 
+    one_rows = one_min.get("candles") or []
     five_rows = five_min.get("candles") or []
     fifteen_rows = fifteen_min.get("candles") or []
     one_hour_rows = one_hour.get("candles") or []
-    four_hour_rows = aggregate_candles(one_hour_rows, 4)
-    daily_rows = daily.get("candles") or []
 
     weather_data = weather()
     news_data = news()
     perf_data = performance()
 
     headlines = []
-
     for item in (news_data.get("items") or [])[:10]:
         headlines.append(
             {
@@ -838,31 +975,36 @@ def build_ai_snapshot():
     return {
         "asset": "ICE Cocoa Futures",
         "symbol": "CC=F",
-        "analysis_style": "DAY_TRADING",
-        "primary_prediction_window": "15 minutes to 4 hours",
-        "maximum_trade_horizon": "24 hours",
+        "analysis_style": "SCALPING_1_TO_15_MINUTES",
+        "primary_prediction_window": "1 to 15 minutes",
+        "maximum_trade_horizon": "15 minutes",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
 
         "important_data_warning": (
-            "Yahoo cocoa futures data may be delayed relative to the user's "
-            "broker quote. Use price structure and levels, but reduce confidence "
-            "for ultra-precise entries if the latest quote is stale."
+            "Yahoo cocoa futures data may be delayed relative to the user's broker quote. "
+            "For a 1â15 minute signal, stale data is a major limitation. Reduce confidence "
+            "or return NO_TRADE if freshness makes the trigger unreliable."
         ),
 
         "market": {
+            "1m": market_metrics(one_rows),
             "5m": market_metrics(five_rows),
             "15m": market_metrics(fifteen_rows),
-            "1h": market_metrics(one_hour_rows),
-            "4h_context": market_metrics(four_hour_rows),
-            "1d_context_only": market_metrics(daily_rows),
+            "1h_context_only": market_metrics(one_hour_rows),
         },
 
         "market_sources": {
+            "1m": one_min.get("source"),
             "5m": five_min.get("source"),
             "15m": fifteen_min.get("source"),
-            "1h": one_hour.get("source"),
-            "4h_context": one_hour.get("source"),
-            "1d_context_only": daily.get("source"),
+            "1h_context_only": one_hour.get("source"),
+        },
+
+        "market_errors": {
+            "1m": one_min.get("error"),
+            "5m": five_min.get("error"),
+            "15m": fifteen_min.get("error"),
+            "1h": one_hour.get("error"),
         },
 
         "weather": weather_data.get("locations", {}),
@@ -898,7 +1040,7 @@ AI_SCHEMA = {
         },
         "time_horizon": {
             "type": "string",
-            "enum": ["15m-1h", "1-4h", "4-24h"]
+            "enum": ["1-5m", "5-15m"]
         },
         "entry_quality": {
             "type": "string",
@@ -993,119 +1135,138 @@ AI_SCHEMA = {
 }
 
 
+
+def enforce_scalping_rules(analysis):
+    if not isinstance(analysis, dict):
+        return analysis
+
+    try:
+        confidence = int(analysis.get("confidence", 0) or 0)
+    except Exception:
+        confidence = 0
+
+    confidence = max(0, min(100, confidence))
+    analysis["confidence"] = confidence
+
+    original_signal = str(analysis.get("signal", "NO_TRADE")).upper().strip()
+    horizon = str(analysis.get("time_horizon", "")).strip()
+
+    if horizon not in {"1-5m", "5-15m"}:
+        analysis["time_horizon"] = "5-15m"
+
+    if confidence < 60:
+        analysis["signal"] = "NO_TRADE"
+
+        if original_signal == "LONG" and analysis.get("bias") == "NEUTRAL":
+            analysis["bias"] = "BULLISH"
+        elif original_signal == "SHORT" and analysis.get("bias") == "NEUTRAL":
+            analysis["bias"] = "BEARISH"
+
+        reason = str(analysis.get("entry_reason") or "")
+        prefix = (
+            f"NO_TRADE enforced: confidence {confidence}% is below the "
+            "60% minimum for an actionable 1â15 minute trade. "
+        )
+        if not reason.startswith("NO_TRADE enforced:"):
+            analysis["entry_reason"] = prefix + reason
+
+    return analysis
+
+
 # ============================================================
 # OPENAI DAY-TRADING ANALYSIS
 # ============================================================
 
 DAY_TRADING_INSTRUCTIONS = """
-You are Cocoa AI, a specialised cocoa-futures DAY-TRADING analysis engine.
+You are Cocoa AI, a specialised ICE cocoa-futures 1â15 MINUTE SCALPING engine.
 
-Your job is to predict the most likely actionable cocoa price direction NOW,
-with the primary focus on the next 15 minutes to 4 hours.
-You may use a 4-24 hour horizon only when the immediate setup needs more time.
-Never output a multi-day or multi-week trade horizon.
+Your task is to decide whether there is an ACTIONABLE trade RIGHT NOW.
 
-PRIMARY TIMEFRAME PRIORITY
+Allowed signals:
+LONG
+SHORT
+NO_TRADE
 
-1. 5-minute price action
-2. 15-minute price action
-3. 1-hour price action
-4. 4-hour context
-5. Daily chart is CONTEXT ONLY and must NEVER dominate the day-trading signal.
+Allowed horizons:
+1-5m
+5-15m
 
-If the daily trend is bullish but 5m/15m/1h are clearly bearish, the current
-day-trade signal can be SHORT.
-If the daily trend is bearish but 5m/15m/1h are clearly bullish, the current
-day-trade signal can be LONG.
+HARD DECISION FRAMEWORK
 
-WHAT YOU MUST ASSESS
+1m = TRIGGER.
+5m = CONFIRMATION.
+15m = STRUCTURE / ROOM.
+1h = CONTEXT ONLY.
 
-- immediate momentum
-- RSI and overbought/oversold conditions
-- SMA position
-- recent highs/lows
-- breakout, failed breakout, reclaim and rejection structure
-- whether price is extended and dangerous to chase
-- agreement between 5m, 15m and 1h
-- current cocoa-specific news
-- West African cocoa weather
-- whether news/weather is likely to matter TODAY
+A LONG or SHORT is invalid unless BOTH a concrete 1m trigger AND 5m confirmation exist.
 
-DIRECTION VS ENTRY
+LONG requires:
+- a concrete bullish 1m event such as SMA20 reclaim, higher-low sequence,
+  failed breakdown/reclaim, break of a recent 1m swing high, or bullish impulse
+  with follow-through;
+AND
+- 5m confirmation such as positive momentum, higher-low structure, SMA20 reclaim,
+  trend above SMA20, or RSI RECOVERING from oversold.
 
-A directional bias is not automatically a trade.
+SHORT requires:
+- a concrete bearish 1m event such as SMA20 loss/rejection, lower-high sequence,
+  failed breakout/rejection, break of a recent 1m swing low, or bearish impulse
+  with follow-through;
+AND
+- 5m confirmation such as negative momentum, lower-high structure, SMA20 loss,
+  trend below SMA20, or RSI ROLLING DOWN from overbought.
 
-Examples:
-- Bearish momentum but price has already collapsed into support = NO_TRADE,
-  bearish bias, wait for rebound/rejection.
-- Bullish momentum but price is directly under resistance = NO_TRADE or wait.
-- Clean breakout/retest with aligned timeframes = LONG/SHORT can be justified.
+IMPORTANT:
+5m being oversold is NOT a long trigger.
+5m being overbought is NOT a short trigger.
+15m direction alone is NOT a trigger.
+1h direction alone is NOT a trigger.
 
-NEWS
+NO_TRADE IS THE DEFAULT.
 
-Use news as a catalyst or risk modifier for intraday price action.
-Old structural stories should carry less weight than fresh market-moving news.
-Do not let generic policy headlines overwhelm clear current price action unless
-they plausibly affect cocoa pricing today.
+Return NO_TRADE when:
+- no explicit 1m trigger exists,
+- 1m and 5m disagree,
+- price is choppy,
+- price is directly into nearby 15m support/resistance,
+- the move has already happened and entry would be chasing,
+- target 1 does not offer at least about 1.2R versus invalidation,
+- data freshness is questionable,
+- confidence is below 60.
 
-WEATHER
+CONFIDENCE RULE:
+Below 60 = NO_TRADE. This is a hard rule.
+60-69 = only with an explicit trigger, 5m confirmation and acceptable R:R.
+70-79 = good trigger/confirmation with one moderate risk.
+80+ = unusually clean alignment.
 
-Weather is mostly a background intraday factor unless there is a genuinely
-material crop-risk development. Normal weather should be near neutral.
-One isolated dry-risk location should not overpower strong price action.
+NEWS / WEATHER:
+For a 1â15 minute trade, fresh price action dominates.
+Old supply/policy headlines are background only.
+Normal weather is background only.
+Only genuinely fresh market-moving cocoa news or an acute new crop event
+should materially alter an immediate scalp.
 
-CONFIDENCE
+LEVEL DISCIPLINE:
+nearest_support must be below current price.
+nearest_resistance must be above current price.
+For LONG: invalidation below the setup failure point; targets above entry.
+For SHORT: invalidation above the setup failure point; targets below entry.
+Do not copy targets into support/resistance fields.
+Use null when a level cannot be established reliably.
 
-Confidence should reflect evidence quality, NOT how strongly you feel.
-Reduce confidence for:
-- stale/delayed prices
-- conflicting 5m/15m/1h structure
-- weak or old news
-- unclear entry
-- price sitting between important levels
+REASONING:
+technical_reason MUST explicitly say:
+1) the exact 1m trigger, or "NO VALID 1m TRIGGER";
+2) whether 5m confirms;
+3) the important 15m structure/level.
 
-Increase confidence when:
-- 5m, 15m and 1h agree
-- momentum and structure agree
-- price confirms a breakout/retest or rejection
-- entry has a clear invalidation
-- catalyst and price action agree
+entry_reason must explain why this entry is preferable to chasing.
 
-SCORING
-
-Technical:
--10 strongly bearish
-0 neutral
-+10 strongly bullish
-
-News:
--10 strongly bearish cocoa
-0 neutral
-+10 strongly bullish cocoa
-
-Weather:
--10 strongly bearish cocoa
-0 neutral
-+10 strongly bullish cocoa
-
-ENTRY LEVELS
-
-Give entry_min, entry_max, invalidation and targets ONLY when there is enough
-evidence to justify them.
-For NO_TRADE, levels may still be supplied when they describe the setup to wait
-for, but do not invent false precision.
-
-PRICE FEED WARNING
-
-Yahoo cocoa prices may lag the user's broker quote. Use market structure and
-relative levels, but reduce confidence and avoid fake point-perfect precision
-when stale data could materially affect the entry.
-
-OUTPUT
+Yahoo may be delayed relative to the broker quote. If that makes the 1m trigger
+unreliable, reduce confidence or return NO_TRADE.
 
 Return only the requested structured JSON.
-Keep reasoning concise, practical and specifically focused on what cocoa is
-likely to do NEXT, not what it may do over coming weeks.
 """
 
 
@@ -1143,11 +1304,12 @@ def run_ai_analysis():
             raise RuntimeError("OpenAI returned no output text")
 
         analysis = json.loads(raw)
+        analysis = enforce_scalping_rules(analysis)
 
         return {
             "ok": True,
             "model": OPENAI_MODEL,
-            "mode": "DAY_TRADING",
+            "mode": "SCALPING_1_15M",
             "analysis": analysis,
             "snapshot": snapshot,
         }
