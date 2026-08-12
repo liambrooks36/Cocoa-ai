@@ -158,14 +158,8 @@ def health():
 
 @app.get("/api/candles")
 def candles(
-    interval: str = Query(
-        "1h",
-        pattern="^(1m|5m|15m|30m|60m|1h|1d)$"
-    ),
-    range: str = Query(
-        "1mo",
-        pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"
-    ),
+    interval: str = Query("1h", pattern="^(5m|15m|30m|60m|1h|1d)$"),
+    range: str = Query("1mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"),
 ):
     symbol = "CC=F"
     yahoo_interval = "60m" if interval == "1h" else interval
