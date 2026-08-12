@@ -54,126 +54,16 @@ LIVE_PRICE_CACHE_SECONDS = 15
 # LIVE SILVER SPOT PRICE
 # ============================================================
 
-def _fetch_live_xag_price():
-    if not ALPHA_VANTAGE_API_KEY:
-        raise RuntimeError("ALPHA_VANTAGE_API_KEY is not configured")
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; SilverAI/1.2)",
-        "Accept": "application/json,text/plain,*/*",
-        "Cache-Control": "no-cache",
-    }
-
-    resp = requests.get(
-        LIVE_PRICE_URL,
-        params={
-            "function": "GOLD_SILVER_SPOT",
-            "symbol": "SILVER",
-            "apikey": ALPHA_VANTAGE_API_KEY,
-        },
-        headers=headers,
-        timeout=12,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-
-    if isinstance(payload, dict):
-        for err_key in ("Error Message", "Information", "Note"):
-            if payload.get(err_key):
-                raise RuntimeError(str(payload.get(err_key)))
-
-    candidates = []
-    if isinstance(payload, dict):
-        # Prefer obvious spot/price fields first.
-        for key in ("price", "Price", "spot_price", "Spot Price", "value"):
-            if key in payload:
-                candidates.append(payload[key])
-
-        # Then accept any scalar field whose key contains "price".
-        for key, value in payload.items():
-            if "price" in str(key).lower() and isinstance(value, (str, int, float)):
-                candidates.append(value)
-
-    price = None
-    for value in candidates:
-        try:
-            candidate = float(value)
-            if 5 <= candidate <= 500:
-                price = candidate
-                break
-        except (TypeError, ValueError):
-            continue
-
-    if price is None:
-        raise RuntimeError(f"Alpha Vantage returned no usable silver spot price: {payload}")
-
-    timestamp = None
-    currency = "USD"
-
-    if isinstance(payload, dict):
-        timestamp = (
-            payload.get("timestamp")
-            or payload.get("Timestamp")
-            or payload.get("last_updated")
-            or payload.get("Last Updated")
-        )
-        currency = (
-            payload.get("currency")
-            or payload.get("Currency")
-            or payload.get("unit")
-            or "USD"
-        )
-
-    return {
-        "ok": True,
-        "symbol": "XAG",
-        "name": "Silver",
-        "price": round(price, 4),
-        "currency": currency,
-        "updated_at": timestamp,
-        "updated_at_readable": timestamp,
-        "source": "Alpha Vantage GOLD_SILVER_SPOT",
-        "live": True,
-    }
-
-
 def live_silver_price():
-    now = time.time()
-
-    if (
-        LIVE_PRICE_CACHE["data"] is not None
-        and now - LIVE_PRICE_CACHE["timestamp"] <= LIVE_PRICE_CACHE_SECONDS
-    ):
-        data = dict(LIVE_PRICE_CACHE["data"])
-        data["cached"] = True
-        data["cache_age_seconds"] = round(now - LIVE_PRICE_CACHE["timestamp"], 2)
-        return data
-
-    try:
-        data = _fetch_live_xag_price()
-        data["cached"] = False
-        data["cache_age_seconds"] = 0
-        LIVE_PRICE_CACHE["data"] = data
-        LIVE_PRICE_CACHE["timestamp"] = now
-        return data
-    except Exception as exc:
-        if LIVE_PRICE_CACHE["data"] is not None:
-            data = dict(LIVE_PRICE_CACHE["data"])
-            data["cached"] = True
-            data["stale"] = True
-            data["live"] = False
-            data["warning"] = f"Fresh live-price request failed: {type(exc).__name__}: {exc}"
-            return data
-
-        return {
-            "ok": False,
-            "symbol": "XAG",
-            "price": None,
-            "currency": "USD",
-            "source": "Alpha Vantage",
-            "live": False,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+    return {
+        "ok": False,
+        "symbol": "XAG",
+        "price": None,
+        "currency": "USD",
+        "source": "manual broker price required",
+        "live": False,
+        "error": "Enter the current broker silver price on the dashboard before refreshing AI.",
+    }
 
 
 @app.get("/api/live-price")
@@ -289,7 +179,7 @@ def health():
         "analysis_mode": "DAY_TRADING",
         "alpha_vantage_configured": bool(ALPHA_VANTAGE_API_KEY),
         "twelve_data_configured": bool(TWELVE_DATA_API_KEY),
-        "primary_market_feed": "Alpha Vantage live silver spot + Yahoo SI=F candle structure",
+        "primary_market_feed": "Manual broker silver price + Yahoo SI=F candle structure",
     }
 
 
@@ -520,13 +410,11 @@ def candles(
 ):
     """
     Yahoo SI=F supplies candle structure.
-    Alpha Vantage supplies the current XAG spot-price anchor.
+    The current broker price is entered manually on the dashboard and sent
+    separately to the AI analysis endpoint.
     """
     cached = _cached_candles(interval, range)
     if cached is not None:
-        live = live_silver_price()
-        cached["live_spot"] = live
-        cached["regular_market_price"] = live.get("price") or cached.get("regular_market_price")
         return cached
 
     try:
@@ -534,10 +422,6 @@ def candles(
         data["source"] = f"Yahoo SI=F candles ({data.get('source', 'Yahoo')})"
         data["provider"] = "yahoo_candles"
         data["fallback"] = False
-
-        live = live_silver_price()
-        data["live_spot"] = live
-        data["regular_market_price"] = live.get("price") or data.get("regular_market_price")
 
         CANDLE_CACHE[(interval, range)] = {
             "timestamp": time.time(),
@@ -548,9 +432,6 @@ def candles(
     except Exception as exc:
         stale = _stale_cached_candles(interval, range)
         if stale is not None:
-            live = live_silver_price()
-            stale["live_spot"] = live
-            stale["regular_market_price"] = live.get("price") or stale.get("regular_market_price")
             stale["warning"] = f"Fresh Yahoo candle request failed: {type(exc).__name__}: {exc}"
             return stale
 
@@ -565,7 +446,6 @@ def candles(
             "interval": interval,
             "range": range,
             "candles": [],
-            "live_spot": live_silver_price(),
             "error": f"Yahoo candles: {type(exc).__name__}: {exc}",
         }
 
@@ -1075,7 +955,7 @@ def performance():
 # AI SNAPSHOT â DAY TRADING FIRST
 # ============================================================
 
-def build_ai_snapshot():
+def build_ai_snapshot(manual_live_price=None):
     one_min = candles(interval="1m", range="1d")
     five_min = candles(interval="5m", range="5d")
     fifteen_min = candles(interval="15m", range="5d")
@@ -1086,10 +966,41 @@ def build_ai_snapshot():
     fifteen_rows = fifteen_min.get("candles") or []
     one_hour_rows = one_hour.get("candles") or []
 
-    live_price_data = live_silver_price()
     macro_data = macro()
     news_data = news()
     perf_data = performance()
+
+    manual_price_info = {
+        "provided": False,
+        "price": None,
+        "currency": "USD",
+        "source": "manual broker input",
+        "yahoo_1m_last_close": None,
+        "difference_vs_yahoo": None,
+        "difference_pct_vs_yahoo": None,
+    }
+
+    try:
+        if manual_live_price is not None:
+            p = float(manual_live_price)
+            if p > 0:
+                manual_price_info["provided"] = True
+                manual_price_info["price"] = round(p, 4)
+
+                yahoo_last = None
+                if one_rows:
+                    try:
+                        yahoo_last = float(one_rows[-1]["c"])
+                    except Exception:
+                        yahoo_last = None
+
+                if yahoo_last is not None:
+                    manual_price_info["yahoo_1m_last_close"] = round(yahoo_last, 4)
+                    diff = p - yahoo_last
+                    manual_price_info["difference_vs_yahoo"] = round(diff, 4)
+                    manual_price_info["difference_pct_vs_yahoo"] = round((diff / yahoo_last) * 100, 4) if yahoo_last else None
+    except Exception:
+        pass
 
     headlines = []
     for item in (news_data.get("items") or [])[:12]:
@@ -1107,15 +1018,13 @@ def build_ai_snapshot():
         "primary_prediction_window": "1 to 15 minutes",
         "maximum_trade_horizon": "15 minutes",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-
-        "live_spot_price": live_price_data,
+        "manual_broker_price": manual_price_info,
 
         "important_data_warning": (
-            "Current silver spot price is supplied separately by Alpha Vantage. "
-            "Intraday OHLC structure is supplied by Yahoo SI=F and may be delayed. "
-            "Use the live spot quote as the current-price anchor, but never pretend a "
-            "single live quote is a full 1m candle. If live spot has moved materially "
-            "away from the latest Yahoo candle, lower confidence in candle-trigger precision."
+            "The current broker silver price is manually entered by the user and is authoritative for NOW. "
+            "Yahoo SI=F supplies the 1m/5m/15m candle structure and may be delayed. "
+            "Compare the manual broker price with the latest Yahoo 1m close. If the gap is material, "
+            "do not pretend the Yahoo trigger is current; reduce confidence or return NO_TRADE."
         ),
 
         "market": {
@@ -1306,17 +1215,17 @@ Below 60 = NO_TRADE.
 
 DATA FRESHNESS:
 There are TWO distinct market inputs:
-1) live_spot_price from Alpha Vantage = current silver spot price anchor;
-2) Yahoo SI=F candles = 1m/5m/15m structure and may be delayed.
+1) manual_broker_price = the user's current silver broker quote and is authoritative for NOW;
+2) Yahoo SI=F candles = 1m/5m/15m historical structure and may be delayed.
 
-Always inspect the live spot price first for where silver is NOW.
+Always inspect manual_broker_price first for where silver is NOW.
 Use Yahoo candles for RSI/SMA/high-low structure, but do not assume the last
-Yahoo candle close is the current market if live spot differs.
+Yahoo candle close is the current market when the manual broker price differs.
 
-If live spot is fresh and close to the latest candle, candle-trigger confidence
-may remain reasonable. If live spot has moved materially beyond the latest
-Yahoo candle structure, return NO_TRADE or reduce confidence rather than
-pretending the delayed candle is current.
+If the manual broker price is missing, reduce confidence or return NO_TRADE.
+If the broker price is close to the latest Yahoo candle, candle-trigger confidence
+may remain reasonable. If it has moved materially beyond the Yahoo structure,
+return NO_TRADE or reduce confidence rather than pretending the delayed candle is current.
 
 SILVER MACRO CONTEXT
 
@@ -1361,11 +1270,11 @@ Return only the requested structured JSON.
 """
 
 
-def run_ai_analysis():
+def run_ai_analysis(manual_live_price=None):
     if ai_client is None:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
 
-    snapshot = build_ai_snapshot()
+    snapshot = build_ai_snapshot(manual_live_price=manual_live_price)
 
     try:
         response = ai_client.responses.create(
@@ -1412,10 +1321,12 @@ def run_ai_analysis():
 
 
 @app.post("/api/analyse")
-def analyse_silver():
-    return run_ai_analysis()
+def analyse_silver(payload: dict = None):
+    payload = payload or {}
+    manual_live_price = payload.get("manual_live_price")
+    return run_ai_analysis(manual_live_price=manual_live_price)
 
 
 @app.get("/api/ai-signal")
-def ai_signal():
-    return run_ai_analysis()
+def ai_signal(manual_live_price: float = Query(None, gt=0)):
+    return run_ai_analysis(manual_live_price=manual_live_price)
