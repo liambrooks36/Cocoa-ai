@@ -2,14 +2,17 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from datetime import datetime, timezone
 import os
 import time
 import re
+import json
 
 import requests
 import feedparser
 import psycopg
 from psycopg.rows import dict_row
+from openai import OpenAI
 
 
 # ============================================================
@@ -18,7 +21,7 @@ from psycopg.rows import dict_row
 
 ROOT = Path(__file__).parent
 
-app = FastAPI(title="Cocoa AI V1.1")
+app = FastAPI(title="Cocoa AI V1.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,11 +33,25 @@ app.add_middleware(
 
 
 # ============================================================
-# DATABASE
+# ENVIRONMENT
 # ============================================================
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
+# Keep this configurable in Render later if we want.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip()
+
+ai_client = (
+    OpenAI(api_key=OPENAI_API_KEY)
+    if OPENAI_API_KEY
+    else None
+)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 def get_db():
     if not DATABASE_URL:
@@ -65,11 +82,6 @@ def database_status():
 
 
 def ensure_tables():
-    """
-    Creates the prediction table if it does not exist.
-    Safe to run repeatedly.
-    """
-
     if not DATABASE_URL:
         return
 
@@ -94,6 +106,56 @@ def ensure_tables():
                         result_24h TEXT,
                         graded_24h_at TIMESTAMPTZ
                     )
+                    """
+                )
+
+                # Upgrade an existing older table safely.
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS technical TEXT
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS weather TEXT
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS entry TEXT
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS price_24h DOUBLE PRECISION
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS return_24h DOUBLE PRECISION
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS result_24h TEXT
+                    """
+                )
+
+                cur.execute(
+                    """
+                    ALTER TABLE predictions
+                    ADD COLUMN IF NOT EXISTS graded_24h_at TIMESTAMPTZ
                     """
                 )
 
@@ -134,26 +196,13 @@ def health():
 
     return {
         "ok": True,
-        "service": "cocoa-ai-v1.1",
+        "service": "cocoa-ai-v1.2",
         "database_configured": bool(DATABASE_URL),
         "database_ok": db_ok,
         "database_error": db_error,
+        "openai_configured": bool(OPENAI_API_KEY),
+        "openai_model": OPENAI_MODEL if OPENAI_API_KEY else None,
     }
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def clean_num(v):
-    try:
-        if v is None:
-            return None
-
-        return float(v)
-
-    except (TypeError, ValueError):
-        return None
 
 
 # ============================================================
@@ -172,22 +221,9 @@ def candles(
     ),
 ):
 
-    """
-    Fetch delayed cocoa futures data from Yahoo Finance.
-
-    Symbol:
-    CC=F
-
-    4-hour candles are created in the frontend from 1-hour data.
-    """
-
     symbol = "CC=F"
 
-    yahoo_interval = (
-        "60m"
-        if interval == "1h"
-        else interval
-    )
+    yahoo_interval = "60m" if interval == "1h" else interval
 
     url = (
         "https://query1.finance.yahoo.com/"
@@ -203,15 +239,11 @@ def candles(
     }
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(compatible; CocoaAI/1.1)"
-        ),
+        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.2)",
         "Accept": "application/json,text/plain,*/*",
     }
 
     try:
-
         resp = requests.get(
             url,
             params=params,
@@ -220,13 +252,11 @@ def candles(
         )
 
         resp.raise_for_status()
-
         payload = resp.json()
 
         chart = payload.get("chart", {})
 
         if chart.get("error"):
-
             return {
                 "symbol": symbol,
                 "source": "Yahoo Finance chart API",
@@ -240,7 +270,6 @@ def candles(
         results = chart.get("result") or []
 
         if not results:
-
             return {
                 "symbol": symbol,
                 "source": "Yahoo Finance chart API",
@@ -254,11 +283,8 @@ def candles(
         result = results[0]
 
         timestamps = result.get("timestamp") or []
-
         indicators = result.get("indicators") or {}
-
         quotes = indicators.get("quote") or []
-
         quote = quotes[0] if quotes else {}
 
         opens = quote.get("open") or []
@@ -270,9 +296,7 @@ def candles(
         candles_out = []
 
         for i, ts in enumerate(timestamps):
-
             try:
-
                 o = opens[i] if i < len(opens) else None
                 h = highs[i] if i < len(highs) else None
                 l = lows[i] if i < len(lows) else None
@@ -315,7 +339,6 @@ def candles(
         }
 
     except Exception as exc:
-
         return {
             "symbol": symbol,
             "source": "Yahoo Finance chart API",
@@ -338,19 +361,15 @@ WEATHER_POINTS = {
     "sunyani": (7.3399, -2.3268),
 }
 
-
 WEATHER_CACHE = {
     "timestamp": 0,
     "data": None,
 }
 
-
-# Refresh weather only every 30 minutes.
 WEATHER_CACHE_SECONDS = 30 * 60
 
 
 def weather_risk(rain, tmax):
-
     if tmax >= 34:
         return "HEAT RISK", "#ff4f45"
 
@@ -368,32 +387,19 @@ def weather():
 
     now = time.time()
 
-    # --------------------------------------------------------
-    # RETURN FRESH CACHE
-    # --------------------------------------------------------
-
     if (
         WEATHER_CACHE["data"] is not None
         and
         now - WEATHER_CACHE["timestamp"] < WEATHER_CACHE_SECONDS
     ):
-
         cached = dict(WEATHER_CACHE["data"])
-
         cached["cached"] = True
         cached["cache_age_seconds"] = int(
             now - WEATHER_CACHE["timestamp"]
         )
-
         return cached
 
-
-    # --------------------------------------------------------
-    # FETCH WEATHER FROM OPEN-METEO
-    # --------------------------------------------------------
-
     try:
-
         keys = list(WEATHER_POINTS.keys())
         coordinates = list(WEATHER_POINTS.values())
 
@@ -418,10 +424,7 @@ def weather():
         }
 
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(compatible; CocoaAI/1.1)"
-            ),
+            "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.2)",
             "Accept": "application/json,text/plain,*/*",
         }
 
@@ -433,34 +436,21 @@ def weather():
         )
 
         response.raise_for_status()
-
         payload = response.json()
 
-        if isinstance(payload, list):
-            results = payload
-        else:
-            results = [payload]
+        results = payload if isinstance(payload, list) else [payload]
 
         locations = {}
 
         for index, key in enumerate(keys):
-
             if index >= len(results):
                 continue
 
             result = results[index]
-
             daily = result.get("daily") or {}
 
-            rain_values = (
-                daily.get("precipitation_sum")
-                or []
-            )
-
-            temp_values = (
-                daily.get("temperature_2m_max")
-                or []
-            )
+            rain_values = daily.get("precipitation_sum") or []
+            temp_values = daily.get("temperature_2m_max") or []
 
             rain = sum(
                 float(x or 0)
@@ -473,15 +463,9 @@ def weather():
                 if x is not None
             ]
 
-            if valid_temps:
-                tmax = max(valid_temps)
-            else:
-                tmax = 0
+            tmax = max(valid_temps) if valid_temps else 0
 
-            label, color = weather_risk(
-                rain,
-                tmax,
-            )
+            label, color = weather_risk(rain, tmax)
 
             locations[key] = {
                 "rain_7d_mm": round(rain, 2),
@@ -490,12 +474,10 @@ def weather():
                 "risk_color": color,
             }
 
-
         if not locations:
             raise RuntimeError(
                 "Open-Meteo returned no usable weather locations"
             )
-
 
         data = {
             "source": "Open-Meteo",
@@ -505,26 +487,19 @@ def weather():
             "locations": locations,
         }
 
-
         WEATHER_CACHE["timestamp"] = now
         WEATHER_CACHE["data"] = data
 
         return data
 
-
     except Exception as exc:
 
-        # If Open-Meteo temporarily fails but we have
-        # previously fetched data, keep serving that data.
-
         if WEATHER_CACHE["data"] is not None:
-
-            cached = dict(
-                WEATHER_CACHE["data"]
-            )
+            cached = dict(WEATHER_CACHE["data"])
 
             cached["cached"] = True
             cached["stale"] = True
+
             cached["cache_age_seconds"] = int(
                 now - WEATHER_CACHE["timestamp"]
             )
@@ -536,7 +511,6 @@ def weather():
 
             return cached
 
-
         return {
             "source": "Open-Meteo",
             "cached": False,
@@ -547,7 +521,7 @@ def weather():
 
 
 # ============================================================
-# COCOA NEWS
+# NEWS
 # ============================================================
 
 NEWS_CACHE = {
@@ -568,25 +542,13 @@ def news():
         and
         now - NEWS_CACHE["timestamp"] < NEWS_CACHE_SECONDS
     ):
-
-        cached = dict(
-            NEWS_CACHE["data"]
-        )
-
+        cached = dict(NEWS_CACHE["data"])
         cached["cached"] = True
-
         return cached
 
+    query = 'cocoa OR cacao Ghana OR "Ivory Coast"'
 
-    query = (
-        'cocoa OR cacao Ghana '
-        'OR "Ivory Coast"'
-    )
-
-    rss = (
-        "https://news.google.com/"
-        "rss/search"
-    )
+    rss = "https://news.google.com/rss/search"
 
     params = {
         "q": query,
@@ -596,14 +558,10 @@ def news():
     }
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(compatible; CocoaAI/1.1)"
-        ),
+        "User-Agent": "Mozilla/5.0 (compatible; CocoaAI/1.2)",
     }
 
     try:
-
         resp = requests.get(
             rss,
             params=params,
@@ -613,9 +571,7 @@ def news():
 
         resp.raise_for_status()
 
-        feed = feedparser.parse(
-            resp.content
-        )
+        feed = feedparser.parse(resp.content)
 
         items = []
 
@@ -625,24 +581,15 @@ def news():
 
             if (
                 hasattr(entry, "source")
-                and isinstance(
-                    entry.source,
-                    dict,
-                )
+                and
+                isinstance(entry.source, dict)
             ):
-                source = entry.source.get(
-                    "title",
-                    "",
-                )
+                source = entry.source.get("title", "")
 
             title = re.sub(
                 r"\s+",
                 " ",
-                getattr(
-                    entry,
-                    "title",
-                    "",
-                ),
+                getattr(entry, "title", ""),
             ).strip()
 
             items.append(
@@ -654,14 +601,9 @@ def news():
                         "Recent",
                     ),
                     "source": source or "Google News",
-                    "link": getattr(
-                        entry,
-                        "link",
-                        "",
-                    ),
+                    "link": getattr(entry, "link", ""),
                 }
             )
-
 
         data = {
             "source": "Google News RSS",
@@ -669,26 +611,18 @@ def news():
             "items": items,
         }
 
-
         NEWS_CACHE["timestamp"] = now
         NEWS_CACHE["data"] = data
 
         return data
 
-
     except Exception as exc:
 
         if NEWS_CACHE["data"] is not None:
-
-            cached = dict(
-                NEWS_CACHE["data"]
-            )
-
+            cached = dict(NEWS_CACHE["data"])
             cached["cached"] = True
             cached["stale"] = True
-
             return cached
-
 
         return {
             "source": "Google News RSS",
@@ -698,27 +632,22 @@ def news():
 
 
 # ============================================================
-# PREDICTIONS — SAVE TO SUPABASE POSTGRES
+# PREDICTIONS
 # ============================================================
 
 @app.post("/api/predictions")
 def save_prediction(payload: dict):
 
     if not DATABASE_URL:
-
         raise HTTPException(
             status_code=503,
             detail="Database is not configured",
         )
 
-
     prediction = str(
         payload.get(
             "prediction",
-            payload.get(
-                "pred",
-                "NO TRADE",
-            ),
+            payload.get("pred", "NO TRADE"),
         )
     )
 
@@ -726,58 +655,27 @@ def save_prediction(payload: dict):
         confidence = int(
             payload.get(
                 "confidence",
-                payload.get(
-                    "conf",
-                    0,
-                ),
+                payload.get("conf", 0),
             )
             or 0
         )
     except Exception:
         confidence = 0
 
-
     try:
         price = float(
-            payload.get(
-                "price",
-                0,
-            )
+            payload.get("price", 0)
             or 0
         )
     except Exception:
         price = 0
 
-
-    technical = str(
-        payload.get(
-            "technical",
-            "",
-        )
-        or ""
-    )
-
-    weather_text = str(
-        payload.get(
-            "weather",
-            "",
-        )
-        or ""
-    )
-
-    entry = str(
-        payload.get(
-            "entry",
-            "",
-        )
-        or ""
-    )
-
+    technical = str(payload.get("technical", "") or "")
+    weather_text = str(payload.get("weather", "") or "")
+    entry = str(payload.get("entry", "") or "")
 
     try:
-
         with get_db() as conn:
-
             with conn.cursor() as cur:
 
                 cur.execute(
@@ -826,15 +724,12 @@ def save_prediction(payload: dict):
 
                 row = cur.fetchone()
 
-
         return {
             "ok": True,
             "prediction": row,
         }
 
-
     except Exception as exc:
-
         raise HTTPException(
             status_code=500,
             detail=(
@@ -843,10 +738,6 @@ def save_prediction(payload: dict):
             ),
         )
 
-
-# ============================================================
-# GET SAVED PREDICTIONS
-# ============================================================
 
 @app.get("/api/predictions")
 def get_predictions(
@@ -858,17 +749,13 @@ def get_predictions(
 ):
 
     if not DATABASE_URL:
-
         return {
             "database": False,
             "items": [],
         }
 
-
     try:
-
         with get_db() as conn:
-
             with conn.cursor() as cur:
 
                 cur.execute(
@@ -895,15 +782,12 @@ def get_predictions(
 
                 rows = cur.fetchall()
 
-
         return {
             "database": True,
             "items": rows,
         }
 
-
     except Exception as exc:
-
         return {
             "database": True,
             "items": [],
@@ -912,14 +796,13 @@ def get_predictions(
 
 
 # ============================================================
-# PERFORMANCE SUMMARY
+# PERFORMANCE
 # ============================================================
 
 @app.get("/api/performance")
 def performance():
 
     if not DATABASE_URL:
-
         return {
             "total_predictions": 0,
             "graded_24h": 0,
@@ -929,11 +812,8 @@ def performance():
             "avg_return": None,
         }
 
-
     try:
-
         with get_db() as conn:
-
             with conn.cursor() as cur:
 
                 cur.execute(
@@ -975,58 +855,22 @@ def performance():
 
                 row = cur.fetchone()
 
-
-        total = int(
-            row.get(
-                "total_predictions",
-                0,
-            )
-            or 0
-        )
-
-        graded = int(
-            row.get(
-                "graded_24h",
-                0,
-            )
-            or 0
-        )
-
-        wins = int(
-            row.get(
-                "wins_24h",
-                0,
-            )
-            or 0
-        )
-
-        losses = int(
-            row.get(
-                "losses_24h",
-                0,
-            )
-            or 0
-        )
-
+        total = int(row.get("total_predictions", 0) or 0)
+        graded = int(row.get("graded_24h", 0) or 0)
+        wins = int(row.get("wins_24h", 0) or 0)
+        losses = int(row.get("losses_24h", 0) or 0)
 
         win_rate = (
-            round(
-                wins / graded * 100,
-                2,
-            )
+            round(wins / graded * 100, 2)
             if graded
             else None
         )
 
-
         avg_return = (
-            float(
-                row["avg_return"]
-            )
+            float(row["avg_return"])
             if row.get("avg_return") is not None
             else None
         )
-
 
         return {
             "total_predictions": total,
@@ -1037,9 +881,7 @@ def performance():
             "avg_return": avg_return,
         }
 
-
     except Exception as exc:
-
         return {
             "total_predictions": 0,
             "graded_24h": 0,
@@ -1049,3 +891,580 @@ def performance():
             "avg_return": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+# ============================================================
+# TECHNICAL HELPERS FOR AI
+# ============================================================
+
+def calc_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return None
+
+    gains = 0.0
+    losses = 0.0
+
+    for i in range(len(closes) - period, len(closes)):
+        change = closes[i] - closes[i - 1]
+
+        if change > 0:
+            gains += change
+        else:
+            losses -= change
+
+    avg_gain = gains / period
+    avg_loss = losses / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+
+    return 100 - (100 / (1 + rs))
+
+
+def market_metrics(candle_rows):
+
+    if not candle_rows:
+        return {}
+
+    closes = [
+        float(x["c"])
+        for x in candle_rows
+        if x.get("c") is not None
+    ]
+
+    highs = [
+        float(x["h"])
+        for x in candle_rows
+        if x.get("h") is not None
+    ]
+
+    lows = [
+        float(x["l"])
+        for x in candle_rows
+        if x.get("l") is not None
+    ]
+
+    if len(closes) < 2:
+        return {}
+
+    last = closes[-1]
+    previous = closes[-2]
+
+    latest_move = (
+        ((last - previous) / previous) * 100
+        if previous
+        else 0
+    )
+
+    rsi = calc_rsi(closes)
+
+    sma20 = (
+        sum(closes[-20:]) / 20
+        if len(closes) >= 20
+        else None
+    )
+
+    sma50 = (
+        sum(closes[-50:]) / 50
+        if len(closes) >= 50
+        else None
+    )
+
+    trend = "neutral"
+
+    if sma20 is not None:
+        if last > sma20 * 1.005:
+            trend = "bullish"
+
+        elif last < sma20 * 0.995:
+            trend = "bearish"
+
+    return {
+        "last_price": round(last, 2),
+        "latest_move_pct": round(latest_move, 3),
+
+        "rsi_14": (
+            round(rsi, 2)
+            if rsi is not None
+            else None
+        ),
+
+        "sma20": (
+            round(sma20, 2)
+            if sma20 is not None
+            else None
+        ),
+
+        "sma50": (
+            round(sma50, 2)
+            if sma50 is not None
+            else None
+        ),
+
+        "trend_vs_sma20": trend,
+
+        "recent_high": (
+            round(max(highs[-30:]), 2)
+            if highs
+            else None
+        ),
+
+        "recent_low": (
+            round(min(lows[-30:]), 2)
+            if lows
+            else None
+        ),
+
+        "candle_count": len(closes),
+    }
+
+
+# ============================================================
+# AI SNAPSHOT
+# ============================================================
+
+def build_ai_snapshot():
+
+    five_min = candles(
+        interval="5m",
+        range="5d",
+    )
+
+    fifteen_min = candles(
+        interval="15m",
+        range="5d",
+    )
+
+    one_hour = candles(
+        interval="1h",
+        range="1mo",
+    )
+
+    daily = candles(
+        interval="1d",
+        range="6mo",
+    )
+
+    weather_data = weather()
+    news_data = news()
+    perf_data = performance()
+
+    headlines = []
+
+    for item in (news_data.get("items") or [])[:10]:
+        headlines.append(
+            {
+                "title": item.get("title"),
+                "published_at": item.get("published_at"),
+                "source": item.get("source"),
+            }
+        )
+
+    return {
+        "asset": "ICE Cocoa Futures",
+        "symbol": "CC=F",
+
+        "generated_at_utc": datetime.now(
+            timezone.utc
+        ).isoformat(),
+
+        "important_data_warning": (
+            "Yahoo cocoa futures data may be delayed. "
+            "Do not assume the final candle equals the user's "
+            "current executable broker quote."
+        ),
+
+        "market": {
+            "5m": market_metrics(
+                five_min.get("candles") or []
+            ),
+
+            "15m": market_metrics(
+                fifteen_min.get("candles") or []
+            ),
+
+            "1h": market_metrics(
+                one_hour.get("candles") or []
+            ),
+
+            "1d": market_metrics(
+                daily.get("candles") or []
+            ),
+        },
+
+        "market_sources": {
+            "5m": five_min.get("source"),
+            "15m": fifteen_min.get("source"),
+            "1h": one_hour.get("source"),
+            "1d": daily.get("source"),
+        },
+
+        "weather": weather_data.get(
+            "locations",
+            {}
+        ),
+
+        "weather_source": weather_data.get(
+            "source"
+        ),
+
+        "weather_stale": weather_data.get(
+            "stale",
+            False
+        ),
+
+        "news": headlines,
+
+        "news_source": news_data.get("source"),
+
+        "prediction_performance": perf_data,
+    }
+
+
+# ============================================================
+# AI OUTPUT SCHEMA
+# ============================================================
+
+AI_SCHEMA = {
+    "type": "object",
+
+    "properties": {
+
+        "signal": {
+            "type": "string",
+            "enum": [
+                "LONG",
+                "SHORT",
+                "NO_TRADE"
+            ]
+        },
+
+        "bias": {
+            "type": "string",
+            "enum": [
+                "BULLISH",
+                "BEARISH",
+                "NEUTRAL"
+            ]
+        },
+
+        "confidence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+        },
+
+        "time_horizon": {
+            "type": "string"
+        },
+
+        "entry_quality": {
+            "type": "string",
+            "enum": [
+                "POOR",
+                "FAIR",
+                "GOOD",
+                "EXCELLENT"
+            ]
+        },
+
+        "risk_level": {
+            "type": "string",
+            "enum": [
+                "LOW",
+                "MEDIUM",
+                "HIGH"
+            ]
+        },
+
+        "technical_score": {
+            "type": "integer",
+            "minimum": -10,
+            "maximum": 10
+        },
+
+        "news_score": {
+            "type": "integer",
+            "minimum": -10,
+            "maximum": 10
+        },
+
+        "weather_score": {
+            "type": "integer",
+            "minimum": -10,
+            "maximum": 10
+        },
+
+        "entry_min": {
+            "type": [
+                "number",
+                "null"
+            ]
+        },
+
+        "entry_max": {
+            "type": [
+                "number",
+                "null"
+            ]
+        },
+
+        "invalidation": {
+            "type": [
+                "number",
+                "null"
+            ]
+        },
+
+        "target_1": {
+            "type": [
+                "number",
+                "null"
+            ]
+        },
+
+        "target_2": {
+            "type": [
+                "number",
+                "null"
+            ]
+        },
+
+        "summary": {
+            "type": "string"
+        },
+
+        "technical_reason": {
+            "type": "string"
+        },
+
+        "news_reason": {
+            "type": "string"
+        },
+
+        "weather_reason": {
+            "type": "string"
+        },
+
+        "entry_reason": {
+            "type": "string"
+        },
+
+        "what_changes_the_view": {
+            "type": "array",
+
+            "items": {
+                "type": "string"
+            },
+
+            "maxItems": 5
+        }
+    },
+
+    "required": [
+        "signal",
+        "bias",
+        "confidence",
+        "time_horizon",
+        "entry_quality",
+        "risk_level",
+        "technical_score",
+        "news_score",
+        "weather_score",
+        "entry_min",
+        "entry_max",
+        "invalidation",
+        "target_1",
+        "target_2",
+        "summary",
+        "technical_reason",
+        "news_reason",
+        "weather_reason",
+        "entry_reason",
+        "what_changes_the_view"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# ============================================================
+# OPENAI ANALYSIS
+# ============================================================
+
+@app.post("/api/analyse")
+def analyse_cocoa():
+
+    if ai_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not configured"
+        )
+
+    snapshot = build_ai_snapshot()
+
+    instructions = """
+You are Cocoa AI, a specialised cocoa-futures analysis engine.
+
+You analyse cocoa futures only from the evidence supplied to you.
+
+The purpose is analytical decision support.
+Do not claim certainty or guaranteed profit.
+
+EVIDENCE PRIORITY
+
+1. Actual price action and market structure.
+2. Agreement or disagreement across timeframes.
+3. Technical momentum.
+4. Cocoa-specific news and supply/demand information.
+5. West African cocoa-belt weather.
+6. Historical model performance, but only when enough graded observations exist.
+
+CORE RULES
+
+- Never invent missing facts.
+- Never invent news.
+- Never invent prices.
+- Never invent weather observations.
+- Missing data reduces confidence.
+- Stale data reduces confidence.
+
+- A bullish directional bias does not automatically mean LONG.
+- A bearish directional bias does not automatically mean SHORT.
+
+- Separate direction from entry quality.
+
+Example:
+A market can be bearish but already too extended to short.
+In that case signal should be NO_TRADE with BEARISH bias.
+
+- Do not force trades.
+- NO_TRADE is a valid and desirable result when evidence is conflicted.
+- Avoid chasing large already-completed moves.
+- Prefer pullbacks, rejection, breakout/retest and clean confirmation.
+
+NEWS RULES
+
+Interpret headlines in the context of cocoa.
+
+Potentially bullish cocoa examples:
+- crop loss
+- disease
+- drought
+- excessive rain
+- heat damage
+- lower production
+- lower arrivals
+- supply shortage
+- political/logistical disruption
+
+Potentially bearish cocoa examples:
+- improving production
+- strong arrivals
+- better crop estimates
+- improved weather
+- demand destruction
+- weak grindings
+- excess supply
+
+Do not blindly classify a headline from one word.
+
+Repeated information may already be priced in.
+
+WEATHER RULES
+
+Interpret weather only in terms of cocoa production.
+
+Dry risk can be bullish if it threatens pods or crop development.
+
+Excessive rain can also be bullish if it increases disease,
+harvest or drying problems.
+
+Normal weather should not automatically create a bullish score.
+
+TECHNICAL RULES
+
+Technical score:
+-10 = strongly bearish
+0 = neutral
++10 = strongly bullish
+
+News score:
+-10 = strongly bearish
+0 = neutral
++10 = strongly bullish
+
+Weather score:
+-10 = strongly bearish cocoa
+0 = neutral
++10 = strongly bullish cocoa
+
+IMPORTANT PRICE DATA LIMITATION
+
+The supplied Yahoo cocoa data can be delayed relative to a broker's
+current executable quote.
+
+Therefore:
+- do not claim ultra-short-term precision,
+- reduce confidence when the last price may be stale,
+- do not create overly precise entry prices without sufficient support.
+
+OUTPUT
+
+Return the requested structured JSON only.
+
+Keep all explanations concise and evidence-based.
+"""
+
+    try:
+
+        response = ai_client.responses.create(
+            model=OPENAI_MODEL,
+
+            instructions=instructions,
+
+            input=(
+                "Analyse this current Cocoa AI market snapshot:\n\n"
+                + json.dumps(
+                    snapshot,
+                    default=str,
+                )
+            ),
+
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "cocoa_ai_analysis",
+                    "strict": True,
+                    "schema": AI_SCHEMA,
+                }
+            },
+        )
+
+        raw = response.output_text
+
+        if not raw:
+            raise RuntimeError(
+                "OpenAI returned no output text"
+            )
+
+        result = json.loads(raw)
+
+        return {
+            "ok": True,
+            "model": OPENAI_MODEL,
+            "analysis": result,
+            "snapshot": snapshot,
+        }
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "AI analysis failed: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        )
