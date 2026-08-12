@@ -39,8 +39,146 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip()
 TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
 
 ai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+
+# Public live spot-price source.
+LIVE_PRICE_URL = "https://www.alphavantage.co/query"
+LIVE_PRICE_CACHE = {"timestamp": 0.0, "data": None}
+LIVE_PRICE_CACHE_SECONDS = 15
+
+
+# ============================================================
+# LIVE SILVER SPOT PRICE
+# ============================================================
+
+def _fetch_live_xag_price():
+    if not ALPHA_VANTAGE_API_KEY:
+        raise RuntimeError("ALPHA_VANTAGE_API_KEY is not configured")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SilverAI/1.2)",
+        "Accept": "application/json,text/plain,*/*",
+        "Cache-Control": "no-cache",
+    }
+
+    resp = requests.get(
+        LIVE_PRICE_URL,
+        params={
+            "function": "GOLD_SILVER_SPOT",
+            "symbol": "SILVER",
+            "apikey": ALPHA_VANTAGE_API_KEY,
+        },
+        headers=headers,
+        timeout=12,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+
+    if isinstance(payload, dict):
+        for err_key in ("Error Message", "Information", "Note"):
+            if payload.get(err_key):
+                raise RuntimeError(str(payload.get(err_key)))
+
+    candidates = []
+    if isinstance(payload, dict):
+        # Prefer obvious spot/price fields first.
+        for key in ("price", "Price", "spot_price", "Spot Price", "value"):
+            if key in payload:
+                candidates.append(payload[key])
+
+        # Then accept any scalar field whose key contains "price".
+        for key, value in payload.items():
+            if "price" in str(key).lower() and isinstance(value, (str, int, float)):
+                candidates.append(value)
+
+    price = None
+    for value in candidates:
+        try:
+            candidate = float(value)
+            if 5 <= candidate <= 500:
+                price = candidate
+                break
+        except (TypeError, ValueError):
+            continue
+
+    if price is None:
+        raise RuntimeError(f"Alpha Vantage returned no usable silver spot price: {payload}")
+
+    timestamp = None
+    currency = "USD"
+
+    if isinstance(payload, dict):
+        timestamp = (
+            payload.get("timestamp")
+            or payload.get("Timestamp")
+            or payload.get("last_updated")
+            or payload.get("Last Updated")
+        )
+        currency = (
+            payload.get("currency")
+            or payload.get("Currency")
+            or payload.get("unit")
+            or "USD"
+        )
+
+    return {
+        "ok": True,
+        "symbol": "XAG",
+        "name": "Silver",
+        "price": round(price, 4),
+        "currency": currency,
+        "updated_at": timestamp,
+        "updated_at_readable": timestamp,
+        "source": "Alpha Vantage GOLD_SILVER_SPOT",
+        "live": True,
+    }
+
+
+def live_silver_price():
+    now = time.time()
+
+    if (
+        LIVE_PRICE_CACHE["data"] is not None
+        and now - LIVE_PRICE_CACHE["timestamp"] <= LIVE_PRICE_CACHE_SECONDS
+    ):
+        data = dict(LIVE_PRICE_CACHE["data"])
+        data["cached"] = True
+        data["cache_age_seconds"] = round(now - LIVE_PRICE_CACHE["timestamp"], 2)
+        return data
+
+    try:
+        data = _fetch_live_xag_price()
+        data["cached"] = False
+        data["cache_age_seconds"] = 0
+        LIVE_PRICE_CACHE["data"] = data
+        LIVE_PRICE_CACHE["timestamp"] = now
+        return data
+    except Exception as exc:
+        if LIVE_PRICE_CACHE["data"] is not None:
+            data = dict(LIVE_PRICE_CACHE["data"])
+            data["cached"] = True
+            data["stale"] = True
+            data["live"] = False
+            data["warning"] = f"Fresh live-price request failed: {type(exc).__name__}: {exc}"
+            return data
+
+        return {
+            "ok": False,
+            "symbol": "XAG",
+            "price": None,
+            "currency": "USD",
+            "source": "Alpha Vantage",
+            "live": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+@app.get("/api/live-price")
+def api_live_price():
+    return live_silver_price()
 
 
 # ============================================================
@@ -149,8 +287,9 @@ def health():
         "openai_configured": bool(OPENAI_API_KEY),
         "openai_model": OPENAI_MODEL if OPENAI_API_KEY else None,
         "analysis_mode": "DAY_TRADING",
+        "alpha_vantage_configured": bool(ALPHA_VANTAGE_API_KEY),
         "twelve_data_configured": bool(TWELVE_DATA_API_KEY),
-        "primary_market_feed": "Twelve Data XAG/USD" if TWELVE_DATA_API_KEY else "Yahoo SI=F fallback",
+        "primary_market_feed": "Alpha Vantage live silver spot + Yahoo SI=F candle structure",
     }
 
 
@@ -379,67 +518,55 @@ def candles(
     interval: str = Query("1h", pattern="^(1m|5m|15m|30m|60m|1h|1d)$"),
     range: str = Query("1mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"),
 ):
+    """
+    Yahoo SI=F supplies candle structure.
+    Alpha Vantage supplies the current XAG spot-price anchor.
+    """
     cached = _cached_candles(interval, range)
     if cached is not None:
+        live = live_silver_price()
+        cached["live_spot"] = live
+        cached["regular_market_price"] = live.get("price") or cached.get("regular_market_price")
         return cached
 
-    primary_error = None
-
     try:
-        rows, meta = _fetch_twelve_silver(interval, range)
-        data = {
-            "symbol": "XAG/USD",
-            "source": "Twelve Data XAG/USD",
-            "provider": "twelve_data",
-            "delayed": False,
+        data = _yahoo_silver_response(interval, range)
+        data["source"] = f"Yahoo SI=F candles ({data.get('source', 'Yahoo')})"
+        data["provider"] = "yahoo_candles"
+        data["fallback"] = False
+
+        live = live_silver_price()
+        data["live_spot"] = live
+        data["regular_market_price"] = live.get("price") or data.get("regular_market_price")
+
+        CANDLE_CACHE[(interval, range)] = {
+            "timestamp": time.time(),
+            "data": data,
+        }
+        return data
+
+    except Exception as exc:
+        stale = _stale_cached_candles(interval, range)
+        if stale is not None:
+            live = live_silver_price()
+            stale["live_spot"] = live
+            stale["regular_market_price"] = live.get("price") or stale.get("regular_market_price")
+            stale["warning"] = f"Fresh Yahoo candle request failed: {type(exc).__name__}: {exc}"
+            return stale
+
+        return {
+            "symbol": "SI=F",
+            "source": "No candle feed",
+            "provider": "none",
+            "delayed": True,
             "fallback": False,
             "cached": False,
             "stale": False,
             "interval": interval,
             "range": range,
-            "currency": meta.get("currency", "USD"),
-            "exchange": meta.get("exchange"),
-            "regular_market_price": rows[-1]["c"],
-            "candles": rows,
-        }
-        CANDLE_CACHE[(interval, range)] = {"timestamp": time.time(), "data": data}
-        return data
-    except Exception as exc:
-        primary_error = f"{type(exc).__name__}: {exc}"
-
-    try:
-        data = _yahoo_silver_response(interval, range)
-        data["primary_feed_error"] = primary_error
-
-        CANDLE_CACHE[(interval, range)] = {
-            "timestamp": time.time() - max(0, CANDLE_CACHE_SECONDS.get(interval, 60) - 10),
-            "data": data,
-        }
-        return data
-    except Exception as fallback_exc:
-        stale = _stale_cached_candles(interval, range)
-        if stale is not None:
-            stale["warning"] = (
-                f"Twelve Data failed ({primary_error}); "
-                f"Yahoo failed ({type(fallback_exc).__name__}: {fallback_exc})"
-            )
-            return stale
-
-        return {
-            "symbol": "XAG/USD",
-            "source": "No market feed",
-            "provider": "none",
-            "delayed": True,
-            "fallback": True,
-            "cached": False,
-            "stale": False,
-            "interval": interval,
-            "range": range,
             "candles": [],
-            "error": (
-                f"Twelve Data: {primary_error}; "
-                f"Yahoo: {type(fallback_exc).__name__}: {fallback_exc}"
-            ),
+            "live_spot": live_silver_price(),
+            "error": f"Yahoo candles: {type(exc).__name__}: {exc}",
         }
 
 
@@ -696,42 +823,93 @@ NEWS_CACHE_SECONDS = 10 * 60
 def news():
     now = time.time()
 
-    if NEWS_CACHE["data"] is not None and now - NEWS_CACHE["timestamp"] < NEWS_CACHE_SECONDS:
+    if (
+        NEWS_CACHE["data"] is not None
+        and now - NEWS_CACHE["timestamp"] < NEWS_CACHE_SECONDS
+    ):
         cached = dict(NEWS_CACHE["data"])
         cached["cached"] = True
         return cached
 
-    query = (
-        '"silver" OR "silver futures" OR XAG OR COMEX '
-        'OR "US dollar" OR DXY OR "Federal Reserve" '
-        'OR inflation OR "Treasury yields" OR gold'
-    )
-    rss = "https://news.google.com/rss/search"
+    queries = [
+        '"silver price" OR "silver futures" OR XAG OR "COMEX silver"',
+        '"precious metals" OR "silver market" OR "silver demand" OR "silver supply"',
+        '("Federal Reserve" OR CPI OR PCE OR inflation OR payrolls OR "Treasury yields" OR DXY OR "US dollar") (silver OR gold OR "precious metals")',
+    ]
 
-    params = {"q": query, "hl": "en-GB", "gl": "GB", "ceid": "GB:en"}
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; SilverAI/1.0.1)"}
+    include_terms = (
+        "silver", "xag", "comex", "precious metal", "gold price", "gold futures",
+        "federal reserve", " fed ", "inflation", " cpi", " pce", "payroll",
+        "jobs report", "treasury yield", "dxy", "dollar index", "us dollar",
+        "interest rate", "rate cut", "rate hike", "mining", "mine supply",
+        "industrial demand", "metals market", "bullion",
+    )
+
+    exclude_terms = (
+        "athletics", "championship", "olympic", "medal", "400m", "50m butterfly",
+        "football", "soccer", "rugby", "swimming", "silver street", "public toilet",
+        "toilets", "gold medal", "wins gold", "won gold",
+    )
+
+    rss = "https://news.google.com/rss/search"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; SilverAI/1.1)"}
 
     try:
-        resp = requests.get(rss, params=params, headers=headers, timeout=15)
-        resp.raise_for_status()
-        feed = feedparser.parse(resp.content)
+        collected = []
 
+        for query in queries:
+            params = {
+                "q": query,
+                "hl": "en-GB",
+                "gl": "GB",
+                "ceid": "GB:en",
+            }
+
+            resp = requests.get(rss, params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+
+            for entry in feed.entries[:15]:
+                title = re.sub(r"\s+", " ", getattr(entry, "title", "")).strip()
+                low = f" {title.lower()} "
+
+                if any(term in low for term in exclude_terms):
+                    continue
+
+                if not any(term in low for term in include_terms):
+                    continue
+
+                source = ""
+                if hasattr(entry, "source") and isinstance(entry.source, dict):
+                    source = entry.source.get("title", "")
+
+                collected.append({
+                    "title": title,
+                    "published_at": getattr(entry, "published", "Recent"),
+                    "source": source or "Google News",
+                    "link": getattr(entry, "link", ""),
+                })
+
+        seen = set()
         items = []
-        for entry in feed.entries[:12]:
-            source = ""
-            if hasattr(entry, "source") and isinstance(entry.source, dict):
-                source = entry.source.get("title", "")
 
-            title = re.sub(r"\s+", " ", getattr(entry, "title", "")).strip()
+        for item in collected:
+            key = re.sub(r"[^a-z0-9]+", " ", item["title"].lower()).strip()
+            if key in seen:
+                continue
 
-            items.append({
-                "title": title,
-                "published_at": getattr(entry, "published", "Recent"),
-                "source": source or "Google News",
-                "link": getattr(entry, "link", ""),
-            })
+            seen.add(key)
+            items.append(item)
 
-        data = {"source": "Google News RSS", "cached": False, "items": items}
+            if len(items) >= 12:
+                break
+
+        data = {
+            "source": "Google News RSS â silver/macro filtered",
+            "cached": False,
+            "items": items,
+        }
+
         NEWS_CACHE["timestamp"] = now
         NEWS_CACHE["data"] = data
         return data
@@ -741,10 +919,11 @@ def news():
             cached = dict(NEWS_CACHE["data"])
             cached["cached"] = True
             cached["stale"] = True
+            cached["warning"] = f"Fresh news request failed: {type(exc).__name__}: {exc}"
             return cached
 
         return {
-            "source": "Google News RSS",
+            "source": "Google News RSS â silver/macro filtered",
             "items": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -907,6 +1086,7 @@ def build_ai_snapshot():
     fifteen_rows = fifteen_min.get("candles") or []
     one_hour_rows = one_hour.get("candles") or []
 
+    live_price_data = live_silver_price()
     macro_data = macro()
     news_data = news()
     perf_data = performance()
@@ -919,8 +1099,6 @@ def build_ai_snapshot():
             "source": item.get("source"),
         })
 
-    feeds = [one_min, five_min, fifteen_min]
-    primary_live = all(x.get("provider") == "twelve_data" and not x.get("delayed") for x in feeds)
 
     return {
         "asset": "Silver / XAGUSD",
@@ -930,14 +1108,15 @@ def build_ai_snapshot():
         "maximum_trade_horizon": "15 minutes",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
 
-        "important_data_warning": (
-            "Primary silver candles are from Twelve Data XAG/USD when available. "
-            "If any required timeframe falls back to Yahoo SI=F, treat that timeframe "
-            "as potentially delayed and reduce confidence or return NO_TRADE when "
-            "freshness makes the trigger unreliable."
-        ),
+        "live_spot_price": live_price_data,
 
-        "primary_feed_live": primary_live,
+        "important_data_warning": (
+            "Current silver spot price is supplied separately by Alpha Vantage. "
+            "Intraday OHLC structure is supplied by Yahoo SI=F and may be delayed. "
+            "Use the live spot quote as the current-price anchor, but never pretend a "
+            "single live quote is a full 1m candle. If live spot has moved materially "
+            "away from the latest Yahoo candle, lower confidence in candle-trigger precision."
+        ),
 
         "market": {
             "1m": market_metrics(one_rows),
@@ -1126,10 +1305,18 @@ Below 60 = NO_TRADE.
 80+ = unusually clean alignment.
 
 DATA FRESHNESS:
-The primary silver feed is Twelve Data XAG/USD.
-Do NOT penalise confidence merely because Yahoo is mentioned elsewhere.
-Only reduce confidence for feed latency when the actual 1m/5m/15m market provider
-shows Yahoo fallback, delayed=true, stale=true, missing candles, or a feed error.
+There are TWO distinct market inputs:
+1) live_spot_price from Alpha Vantage = current silver spot price anchor;
+2) Yahoo SI=F candles = 1m/5m/15m structure and may be delayed.
+
+Always inspect the live spot price first for where silver is NOW.
+Use Yahoo candles for RSI/SMA/high-low structure, but do not assume the last
+Yahoo candle close is the current market if live spot differs.
+
+If live spot is fresh and close to the latest candle, candle-trigger confidence
+may remain reasonable. If live spot has moved materially beyond the latest
+Yahoo candle structure, return NO_TRADE or reduce confidence rather than
+pretending the delayed candle is current.
 
 SILVER MACRO CONTEXT
 
