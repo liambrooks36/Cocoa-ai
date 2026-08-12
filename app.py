@@ -38,6 +38,7 @@ app.add_middleware(
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip()
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
 
 ai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -151,6 +152,8 @@ def health():
         "openai_configured": bool(OPENAI_API_KEY),
         "openai_model": OPENAI_MODEL if OPENAI_API_KEY else None,
         "analysis_mode": "DAY_TRADING",
+        "twelve_data_configured": bool(TWELVE_DATA_API_KEY),
+        "primary_market_feed": "Twelve Data XAG/USD" if TWELVE_DATA_API_KEY else "Yahoo SI=F fallback",
     }
 
 
@@ -253,109 +256,103 @@ def _fetch_yahoo_chart(symbol, yahoo_interval, range_name):
     )
 
 
+def _twelve_interval(interval):
+    return {"1m":"1min","5m":"5min","15m":"15min","30m":"30min","60m":"1h","1h":"1h","1d":"1day"}[interval]
+
+
+def _twelve_outputsize(interval, range_name):
+    # Keep requests compact: enough history for chart + SMA/RSI/structure without wasting credits.
+    sizes = {
+        ("1m","1d"): 500, ("5m","5d"): 500, ("15m","5d"): 300,
+        ("1h","1mo"): 500, ("60m","1mo"): 500, ("1d","1y"): 365,
+    }
+    return sizes.get((interval, range_name), 500)
+
+
+def _fetch_twelve_silver(interval, range_name):
+    if not TWELVE_DATA_API_KEY:
+        raise RuntimeError("TWELVE_DATA_API_KEY is not configured")
+
+    resp = requests.get(
+        "https://api.twelvedata.com/time_series",
+        params={
+            "symbol": "XAG/USD",
+            "interval": _twelve_interval(interval),
+            "outputsize": _twelve_outputsize(interval, range_name),
+            "timezone": "UTC",
+            "order": "ASC",
+            "apikey": TWELVE_DATA_API_KEY,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if payload.get("status") == "error" or not payload.get("values"):
+        raise RuntimeError(payload.get("message") or "Twelve Data returned no XAG/USD candles")
+
+    rows=[]
+    for x in payload["values"]:
+        try:
+            dt=datetime.strptime(x["datetime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            rows.append({"t":int(dt.timestamp()),"o":float(x["open"]),"h":float(x["high"]),"l":float(x["low"]),"c":float(x["close"]),"v":float(x.get("volume") or 0)})
+        except (KeyError, TypeError, ValueError):
+            continue
+    rows.sort(key=lambda x:x["t"])
+    if not rows:
+        raise RuntimeError("Twelve Data returned zero usable XAG/USD OHLC candles")
+    return rows, payload.get("meta") or {}
+
+
+def _yahoo_silver_response(interval, range_name):
+    symbol="SI=F"
+    yahoo_interval="60m" if interval=="1h" else interval
+    result,yahoo_host=_fetch_yahoo_chart(symbol,yahoo_interval,range_name)
+    timestamps=result.get("timestamp") or []
+    quote=(((result.get("indicators") or {}).get("quote") or [{}])[0])
+    opens,highs,lows,closes,volumes=[quote.get(k) or [] for k in ("open","high","low","close","volume")]
+    out=[]
+    for i,ts in enumerate(timestamps):
+        try:
+            o=opens[i] if i<len(opens) else None; h=highs[i] if i<len(highs) else None
+            l=lows[i] if i<len(lows) else None; c=closes[i] if i<len(closes) else None
+            v=volumes[i] if i<len(volumes) else 0
+            if None in (o,h,l,c): continue
+            out.append({"t":int(ts),"o":float(o),"h":float(h),"l":float(l),"c":float(c),"v":float(v or 0)})
+        except (TypeError,ValueError,IndexError): pass
+    if not out: raise RuntimeError("Yahoo returned zero usable OHLC candles")
+    meta=result.get("meta") or {}
+    return {"symbol":symbol,"source":f"Yahoo Finance SI=F fallback ({yahoo_host})","provider":"yahoo","delayed":True,"fallback":True,"cached":False,"stale":False,"interval":interval,"range":range,"currency":meta.get("currency"),"exchange":meta.get("exchangeName"),"regular_market_price":meta.get("regularMarketPrice"),"candles":out}
+
+
 @app.get("/api/candles")
 def candles(
-    interval: str = Query(
-        "1h",
-        pattern="^(1m|5m|15m|30m|60m|1h|1d)$"
-    ),
-    range: str = Query(
-        "1mo",
-        pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"
-    ),
+    interval: str = Query("1h", pattern="^(1m|5m|15m|30m|60m|1h|1d)$"),
+    range: str = Query("1mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y|max)$"),
 ):
-    symbol = "SI=F"
+    cached=_cached_candles(interval,range)
+    if cached is not None: return cached
 
-    cached = _cached_candles(interval, range)
-    if cached is not None:
-        return cached
-
-    yahoo_interval = "60m" if interval == "1h" else interval
+    primary_error=None
+    try:
+        rows,meta=_fetch_twelve_silver(interval,range)
+        data={"symbol":"XAG/USD","source":"Twelve Data XAG/USD","provider":"twelve_data","delayed":False,"fallback":False,"cached":False,"stale":False,"interval":interval,"range":range,"currency":meta.get("currency","USD"),"exchange":meta.get("exchange"),"regular_market_price":rows[-1]["c"],"candles":rows}
+        CANDLE_CACHE[(interval,range)]={"timestamp":time.time(),"data":data}
+        return data
+    except Exception as exc:
+        primary_error=f"{type(exc).__name__}: {exc}"
 
     try:
-        result, yahoo_host = _fetch_yahoo_chart(symbol, yahoo_interval, range)
-
-        timestamps = result.get("timestamp") or []
-        quote = (((result.get("indicators") or {}).get("quote") or [{}])[0])
-
-        opens = quote.get("open") or []
-        highs = quote.get("high") or []
-        lows = quote.get("low") or []
-        closes = quote.get("close") or []
-        volumes = quote.get("volume") or []
-
-        candles_out = []
-
-        for i, ts in enumerate(timestamps):
-            try:
-                o = opens[i] if i < len(opens) else None
-                h = highs[i] if i < len(highs) else None
-                l = lows[i] if i < len(lows) else None
-                c = closes[i] if i < len(closes) else None
-                v = volumes[i] if i < len(volumes) else 0
-
-                if None in (o, h, l, c):
-                    continue
-
-                candles_out.append(
-                    {
-                        "t": int(ts),
-                        "o": float(o),
-                        "h": float(h),
-                        "l": float(l),
-                        "c": float(c),
-                        "v": float(v or 0),
-                    }
-                )
-
-            except (TypeError, ValueError, IndexError):
-                continue
-
-        if not candles_out:
-            raise RuntimeError("Yahoo returned zero usable OHLC candles")
-
-        meta = result.get("meta") or {}
-
-        data = {
-            "symbol": symbol,
-            "source": f"Yahoo Finance chart API ({yahoo_host})",
-            "delayed": True,
-            "cached": False,
-            "stale": False,
-            "interval": interval,
-            "range": range,
-            "currency": meta.get("currency"),
-            "exchange": meta.get("exchangeName"),
-            "regular_market_price": meta.get("regularMarketPrice"),
-            "candles": candles_out,
-        }
-
-        CANDLE_CACHE[(interval, range)] = {
-            "timestamp": time.time(),
-            "data": data,
-        }
-
+        data=_yahoo_silver_response(interval,range)
+        data["primary_feed_error"]=primary_error
+        # Cache fallback briefly, so Twelve Data is retried soon rather than hiding an outage.
+        CANDLE_CACHE[(interval,range)]={"timestamp":time.time()-max(0,CANDLE_CACHE_SECONDS.get(interval,60)-10),"data":data}
         return data
-
-    except Exception as exc:
-        stale = _stale_cached_candles(interval, range)
+    except Exception as fallback_exc:
+        stale=_stale_cached_candles(interval,range)
         if stale is not None:
-            stale["warning"] = (
-                f"Fresh Yahoo request failed: {type(exc).__name__}: {exc}"
-            )
+            stale["warning"]=f"Twelve Data failed ({primary_error}); Yahoo failed ({type(fallback_exc).__name__}: {fallback_exc})"
             return stale
-
-        return {
-            "symbol": symbol,
-            "source": "Yahoo Finance chart API",
-            "delayed": True,
-            "cached": False,
-            "stale": False,
-            "interval": interval,
-            "range": range,
-            "candles": [],
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        return {"symbol":"XAG/USD","source":"No market feed","provider":"none","delayed":True,"fallback":True,"cached":False,"stale":False,"interval":interval,"range":range,"candles":[],"error":f"Twelve Data: {primary_error}; Yahoo: {type(fallback_exc).__name__}: {fallback_exc}"}
 
 
 # ============================================================
@@ -930,7 +927,7 @@ def market_metrics(candle_rows):
 
 
 # ============================================================
-# AI SNAPSHOT — DAY TRADING FIRST
+# AI SNAPSHOT â DAY TRADING FIRST
 # ============================================================
 
 def build_ai_snapshot():
@@ -968,7 +965,7 @@ def build_ai_snapshot():
 
         "important_data_warning": (
             "Yahoo silver futures data can be delayed relative to the user's broker quote. "
-            "For a 1–15 minute signal, stale data is a major limitation. Reduce confidence "
+            "For a 1â15 minute signal, stale data is a major limitation. Reduce confidence "
             "or return NO_TRADE if freshness makes the trigger unreliable."
         ),
 
@@ -1149,7 +1146,7 @@ def enforce_scalping_rules(analysis):
         reason = str(analysis.get("entry_reason") or "")
         prefix = (
             f"NO_TRADE enforced: confidence {confidence}% is below the "
-            "60% minimum for an actionable 1–15 minute trade. "
+            "60% minimum for an actionable 1â15 minute trade. "
         )
         if not reason.startswith("NO_TRADE enforced:"):
             analysis["entry_reason"] = prefix + reason
@@ -1162,7 +1159,7 @@ def enforce_scalping_rules(analysis):
 # ============================================================
 
 DAY_TRADING_INSTRUCTIONS = """
-You are Silver AI, a specialised COMEX silver-futures 1–15 MINUTE SCALPING engine.
+You are Silver AI, a specialised COMEX silver-futures 1â15 MINUTE SCALPING engine.
 
 Your task is to decide whether there is an ACTIONABLE silver trade RIGHT NOW.
 
@@ -1228,7 +1225,7 @@ Use the supporting markets as context, never as a substitute for the silver trig
 - US 10Y yield (^TNX): sharply rising yields can pressure precious metals; falling yields
   can support them. Intraday silver price action still takes priority.
 - Fresh Fed, inflation, payrolls, Treasury-yield, dollar, geopolitical and metals-specific
-  headlines can materially change a 1–15 minute setup.
+  headlines can materially change a 1â15 minute setup.
 
 NEWS
 
